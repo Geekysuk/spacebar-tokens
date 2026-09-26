@@ -221,7 +221,7 @@ function empties() {
         ${groups[k].map(e => `
           <div class="list-item">
             <div class="main">
-              <div><b>${esc(e.machineName)}</b> <span class="dim small">${esc(e.tag)}</span> ${e.ok === false ? '<span class="pill bad">fault</span>' : ""}</div>
+              <div><b>${esc(e.machineName)}</b> <span class="dim small">${esc(e.tag)}</span> ${e.ok === false ? '<span class="pill bad">fault</span>' : e.check === "skipped" ? '<span class="pill open">not tested</span>' : ""}</div>
               <div class="t">${fmtTime.format(tsDate(e.at))} · ${esc(e.staffName)}</div>
               ${e.note ? `<div class="note">${esc(e.note)}</div>` : ""}
             </div>
