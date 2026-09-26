@@ -3,7 +3,8 @@ import { doc, getDoc, collection, serverTimestamp, writeBatch }
 import { db, sha256, el, setMsg } from "./fb.js";
 
 const REMEMBER_MS = 12 * 60 * 60 * 1000;
-const state = { tag: "", machine: null, staffHash: "", staffName: "" };
+const TEST_DUE_MS = 48 * 60 * 60 * 1000;
+const state = { tag: "", machine: null, status: null, staffHash: "", staffName: "" };
 
 const digitsOnly = (input) => { input.value = input.value.replace(/\D/g, "").slice(0, 4); };
 ["tag", "staff"].forEach(id => el(id).addEventListener("input", e => digitsOnly(e.target)));
@@ -14,85 +15,88 @@ function show(step) {
   ["step-staff", "step-machine", "step-count", "step-done"].forEach(s => el(s).classList.toggle("hidden", s !== step));
   window.scrollTo(0, 0);
 }
-
-function remember() {
-  try { localStorage.setItem("sb_staff", JSON.stringify({ h: state.staffHash, n: state.staffName, t: Date.now() })); } catch {}
-}
-function forget() {
-  try { localStorage.removeItem("sb_staff"); } catch {}
-  state.staffHash = ""; state.staffName = "";
-}
+function remember() { try { localStorage.setItem("sb_staff", JSON.stringify({ h: state.staffHash, n: state.staffName, t: Date.now() })); } catch {} }
+function forget() { try { localStorage.removeItem("sb_staff"); } catch {} state.staffHash = ""; state.staffName = ""; }
 function recall() {
-  try {
-    const s = JSON.parse(localStorage.getItem("sb_staff") || "null");
-    if (s && s.h && Date.now() - s.t < REMEMBER_MS) { state.staffHash = s.h; state.staffName = s.n; return true; }
-  } catch {}
+  try { const s = JSON.parse(localStorage.getItem("sb_staff") || "null");
+    if (s && s.h && Date.now() - s.t < REMEMBER_MS) { state.staffHash = s.h; state.staffName = s.n; return true; } } catch {}
   return false;
 }
+const tsDate = (t) => (t && typeof t.toDate === "function") ? t.toDate() : null;
+function ago(d) {
+  const h = Math.floor((Date.now() - d.getTime()) / 3600000);
+  if (h < 1) return "less than an hour ago";
+  if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
+  const dd = Math.floor(h / 24); return `${dd} day${dd === 1 ? "" : "s"} ago`;
+}
+const fmtWhen = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", weekday: "short", hour: "2-digit", minute: "2-digit" });
 
 function goMachine() {
   el("who-name").textContent = state.staffName;
-  el("tag").value = "";
-  setMsg("machine-msg", "");
-  show("step-machine");
-  el("tag").focus();
+  el("tag").value = ""; setMsg("machine-msg", "");
+  show("step-machine"); el("tag").focus();
 }
 
 el("btn-staff").addEventListener("click", async () => {
-  const code = el("staff").value.trim();
-  setMsg("staff-msg", "");
+  const code = el("staff").value.trim(); setMsg("staff-msg", "");
   if (code.length !== 4) return setMsg("staff-msg", "Enter your 4-digit staff code.", "error");
   const btn = el("btn-staff"); btn.disabled = true;
   try {
     const hash = await sha256(code);
     const sSnap = await getDoc(doc(db, "staffCodes", hash));
     if (!sSnap.exists() || sSnap.data().active === false) return setMsg("staff-msg", "That staff code isn't recognised.", "error");
-    state.staffHash = hash; state.staffName = sSnap.data().name;
-    remember();
-    el("staff").value = "";
-    goMachine();
-  } catch (err) {
-    console.error(err);
-    setMsg("staff-msg", "Couldn't check the code — is the phone online?", "error");
-  } finally { btn.disabled = false; }
+    state.staffHash = hash; state.staffName = sSnap.data().name; remember(); el("staff").value = ""; goMachine();
+  } catch (err) { console.error(err); setMsg("staff-msg", "Couldn't check the code — is the phone online?", "error"); }
+  finally { btn.disabled = false; }
 });
+el("btn-switch").addEventListener("click", (e) => { e.preventDefault(); forget(); setMsg("staff-msg", ""); show("step-staff"); el("staff").focus(); });
 
-el("btn-switch").addEventListener("click", (e) => {
-  e.preventDefault();
-  forget();
-  setMsg("staff-msg", "");
-  show("step-staff");
-  el("staff").focus();
-});
+function renderChecks() {
+  const st = state.status || {};
+  const last = tsDate(st.lastTestedAt);
+  const mustTest = !last || (Date.now() - last.getTime() > TEST_DUE_MS);
+  el("m-status").textContent = last ? `Last tested ${ago(last)} by ${st.lastTestedBy || "staff"}` : "Never tested";
+
+  const faultBox = el("fault-open");
+  if (st.faultOpen) {
+    const at = tsDate(st.faultAt);
+    faultBox.textContent = `Fault already reported: ${st.faultNote || "(no details)"} — ${st.faultBy || "staff"}${at ? ", " + fmtWhen.format(at) : ""}. Rob hasn't closed it yet.`;
+    faultBox.classList.remove("hidden");
+  } else faultBox.classList.add("hidden");
+
+  const opts = [];
+  opts.push(["ok", "Tested — working OK", "ok"]);
+  if (st.faultOpen) {
+    opts.push(["stillbroken", "Still broken — same fault", "bad"]);
+    opts.push(["bad", "Something else is wrong", "bad"]);
+  } else opts.push(["bad", "Something's wrong", "bad"]);
+  opts.push(["skipped", mustTest ? `Skipped — not allowed, ${last ? "not tested for " + ago(last).replace(" ago", "") : "never tested"}` : "Skipped — too busy to test", "", mustTest]);
+
+  el("check-options").innerHTML = opts.map(([v, label, cls, dis]) =>
+    `<label class="choice ${cls}${dis ? " disabled" : ""}"><input type="radio" name="check" value="${v}"${dis ? " disabled" : ""}> ${label}</label>`).join("");
+  document.querySelectorAll('input[name="check"]').forEach(r => r.addEventListener("change", () => {
+    const bad = document.querySelector('input[name="check"]:checked')?.value === "bad";
+    el("fault-wrap").classList.toggle("hidden", !bad);
+    if (bad) el("note").focus();
+  }));
+  el("fault-wrap").classList.add("hidden");
+}
 
 el("btn-machine").addEventListener("click", async () => {
-  const tag = el("tag").value.trim();
-  setMsg("machine-msg", "");
+  const tag = el("tag").value.trim(); setMsg("machine-msg", "");
   if (tag.length !== 4) return setMsg("machine-msg", "Enter the 4-digit machine code from the sticker.", "error");
   const btn = el("btn-machine"); btn.disabled = true;
   try {
-    const mSnap = await getDoc(doc(db, "machines", tag));
+    const [mSnap, sSnap] = await Promise.all([getDoc(doc(db, "machines", tag)), getDoc(doc(db, "status", tag))]);
     if (!mSnap.exists() || mSnap.data().active === false) return setMsg("machine-msg", `No machine with code ${tag}. Check the sticker.`, "error");
-    state.tag = tag; state.machine = mSnap.data();
-    el("m-name").textContent = state.machine.name;
-    el("m-who").textContent = state.staffName;
-    el("tokens").value = ""; el("note").value = "";
-    document.querySelectorAll('input[name="check"]').forEach(r => { r.checked = false; });
-    el("fault-wrap").classList.add("hidden");
-    setMsg("count-msg", "");
-    show("step-count");
-    el("tokens").focus();
-  } catch (err) {
-    console.error(err);
-    setMsg("machine-msg", "Couldn't find the machine — is the phone online?", "error");
-  } finally { btn.disabled = false; }
+    state.tag = tag; state.machine = mSnap.data(); state.status = sSnap.exists() ? sSnap.data() : null;
+    el("m-name").textContent = state.machine.name; el("m-who").textContent = state.staffName;
+    el("tokens").value = ""; el("note").value = ""; setMsg("count-msg", "");
+    renderChecks();
+    show("step-count"); el("tokens").focus();
+  } catch (err) { console.error(err); setMsg("machine-msg", "Couldn't find the machine — is the phone online?", "error"); }
+  finally { btn.disabled = false; }
 });
-
-document.querySelectorAll('input[name="check"]').forEach(r => r.addEventListener("change", () => {
-  const bad = document.querySelector('input[name="check"]:checked')?.value === "bad";
-  el("fault-wrap").classList.toggle("hidden", !bad);
-  if (bad) el("note").focus();
-}));
 
 el("btn-back").addEventListener("click", goMachine);
 
@@ -112,8 +116,15 @@ el("btn-save").addEventListener("click", async () => {
     const batch = writeBatch(db);
     const emptyRef = doc(collection(db, "empties"));
     const base = { tag: state.tag, machineName: state.machine.name, staffHash: state.staffHash, staffName: state.staffName, at: serverTimestamp() };
-    batch.set(emptyRef, { ...base, tokens, ok: check !== "bad", check, note: check === "bad" ? note : "" });
-    if (check === "bad") batch.set(doc(collection(db, "faults")), { ...base, note, status: "open", emptyId: emptyRef.id });
+    batch.set(emptyRef, { ...base, tokens, ok: check === "ok" || check === "skipped", check, note: check === "bad" ? note : "" });
+    let faultRef = null;
+    if (check === "bad") { faultRef = doc(collection(db, "faults")); batch.set(faultRef, { ...base, note, status: "open", emptyId: emptyRef.id }); }
+    if (check !== "skipped") {
+      const st = { tag: state.tag, staffHash: state.staffHash, lastTestedAt: serverTimestamp(), lastTestedBy: state.staffName, lastCheck: check,
+        faultOpen: check === "bad" ? true : !!(state.status && state.status.faultOpen) };
+      if (check === "bad") Object.assign(st, { faultNote: note, faultAt: serverTimestamp(), faultBy: state.staffName, faultId: faultRef.id });
+      batch.set(doc(db, "status", state.tag), st, { merge: true });
+    }
     await batch.commit();
     remember();
     el("done-n").textContent = tokens.toLocaleString("en-GB");
