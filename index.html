@@ -49,12 +49,11 @@
     </div>
     <label for="tokens">Tokens counted</label>
     <input id="tokens" class="count-input" type="number" inputmode="numeric" min="0" max="100000" placeholder="0">
-    <label for="tokens2">Type it again</label>
-    <input id="tokens2" class="count-input again" type="number" inputmode="numeric" min="0" max="100000" placeholder="0">
 
     <label>Machine check</label>
     <label class="choice ok"><input type="radio" name="check" value="ok"> Tested — working OK</label>
     <label class="choice bad"><input type="radio" name="check" value="bad"> Something's wrong</label>
+    <label class="choice"><input type="radio" name="check" value="skipped"> Skipped — too busy to test</label>
     <div id="fault-wrap" class="hidden">
       <label for="note">What's wrong?</label>
       <textarea id="note" maxlength="300" placeholder="e.g. joystick sticking, coin mech jammed, no sound"></textarea>
