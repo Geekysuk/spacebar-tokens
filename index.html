@@ -21,17 +21,27 @@
     <p>Token count</p>
   </div>
 
-  <!-- Step 1: codes -->
-  <section id="step-codes" class="panel">
-    <label for="tag">Machine code (on the sticker)</label>
-    <input id="tag" class="code-input" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="····">
+  <!-- Step 1: staff code -->
+  <section id="step-staff" class="panel">
     <label for="staff">Your staff code</label>
     <input id="staff" class="code-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="····">
-    <div id="codes-msg"></div>
-    <button id="btn-next" class="btn primary mt">Next</button>
+    <div id="staff-msg"></div>
+    <button id="btn-staff" class="btn primary mt">Next</button>
   </section>
 
-  <!-- Step 2: count -->
+  <!-- Step 2: machine code -->
+  <section id="step-machine" class="panel hidden">
+    <div class="machine-card">
+      <span class="name" id="who-name"></span>
+      <a href="#" id="btn-switch" class="who">Not you?</a>
+    </div>
+    <label for="tag">Machine code (on the sticker)</label>
+    <input id="tag" class="code-input" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="····">
+    <div id="machine-msg"></div>
+    <button id="btn-machine" class="btn primary mt">Next</button>
+  </section>
+
+  <!-- Step 3: count -->
   <section id="step-count" class="panel hidden">
     <div class="machine-card">
       <span class="name" id="m-name"></span>
@@ -54,12 +64,13 @@
     <button id="btn-back" class="btn quiet mt">Back</button>
   </section>
 
-  <!-- Step 3: done -->
+  <!-- Step 4: done -->
   <section id="step-done" class="panel hidden">
     <div class="done-big" id="done-n">0</div>
     <p class="done-sub" id="done-sub"></p>
     <div id="done-fault" class="msg info hidden">Fault reported — the machine's been flagged for repair.</div>
-    <button id="btn-another" class="btn primary mt">Log another machine</button>
+    <button id="btn-another" class="btn primary mt">Next machine</button>
+    <button id="btn-finish" class="btn quiet mt">Finished</button>
   </section>
 
   <p class="dim small" style="text-align:center;margin-top:20px">Staff only. If your code doesn't work, ask Rob.</p>
