@@ -76,7 +76,7 @@ el("btn-machine").addEventListener("click", async () => {
     state.tag = tag; state.machine = mSnap.data();
     el("m-name").textContent = state.machine.name;
     el("m-who").textContent = state.staffName;
-    el("tokens").value = ""; el("tokens2").value = ""; el("note").value = "";
+    el("tokens").value = ""; el("note").value = "";
     document.querySelectorAll('input[name="check"]').forEach(r => { r.checked = false; });
     el("fault-wrap").classList.add("hidden");
     setMsg("count-msg", "");
@@ -98,13 +98,12 @@ el("btn-back").addEventListener("click", goMachine);
 
 el("btn-save").addEventListener("click", async () => {
   setMsg("count-msg", "");
-  const a = el("tokens").value.trim(), b = el("tokens2").value.trim();
+  const a = el("tokens").value.trim();
   if (a === "" || !/^\d+$/.test(a)) return setMsg("count-msg", "Type the number of tokens you took out.", "error");
-  if (a !== b) return setMsg("count-msg", "The two numbers don't match — check and type again.", "error");
   const tokens = parseInt(a, 10);
   if (tokens > 100000) return setMsg("count-msg", "That's more than 100,000 — double-check it.", "error");
   const check = document.querySelector('input[name="check"]:checked')?.value;
-  if (!check) return setMsg("count-msg", "Tick whether the machine's working OK or not.", "error");
+  if (!check) return setMsg("count-msg", "Tick one of the machine check options.", "error");
   const note = el("note").value.trim();
   if (check === "bad" && !note) return setMsg("count-msg", "Say what's wrong so it can be fixed.", "error");
 
@@ -113,7 +112,7 @@ el("btn-save").addEventListener("click", async () => {
     const batch = writeBatch(db);
     const emptyRef = doc(collection(db, "empties"));
     const base = { tag: state.tag, machineName: state.machine.name, staffHash: state.staffHash, staffName: state.staffName, at: serverTimestamp() };
-    batch.set(emptyRef, { ...base, tokens, ok: check === "ok", note: check === "bad" ? note : "" });
+    batch.set(emptyRef, { ...base, tokens, ok: check !== "bad", check, note: check === "bad" ? note : "" });
     if (check === "bad") batch.set(doc(collection(db, "faults")), { ...base, note, status: "open", emptyId: emptyRef.id });
     await batch.commit();
     remember();
