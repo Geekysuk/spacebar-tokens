@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
+<meta name="theme-color" content="#121113">
+<meta name="robots" content="noindex">
+<title>Spacebar tokens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="app.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="./icon.svg" type="image/svg+xml">
+</head>
+<body>
+<div class="wrap">
+  <div class="staff-hero">
+    <img class="logo" src="./logo.svg" alt="Spacebar Arcade">
+    <p>Token count</p>
+  </div>
+
+  <!-- Step 1: codes -->
+  <section id="step-codes" class="panel">
+    <label for="tag">Machine code (on the sticker)</label>
+    <input id="tag" class="code-input" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="····">
+    <label for="staff">Your staff code</label>
+    <input id="staff" class="code-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="····">
+    <div id="codes-msg"></div>
+    <button id="btn-next" class="btn primary mt">Next</button>
+  </section>
+
+  <!-- Step 2: count -->
+  <section id="step-count" class="panel hidden">
+    <div class="machine-card">
+      <span class="name" id="m-name"></span>
+      <span class="who" id="m-who"></span>
+    </div>
+    <label for="tokens">Tokens counted</label>
+    <input id="tokens" class="count-input" type="number" inputmode="numeric" min="0" max="100000" placeholder="0">
+    <label for="tokens2">Type it again</label>
+    <input id="tokens2" class="count-input again" type="number" inputmode="numeric" min="0" max="100000" placeholder="0">
+
+    <label>Machine check</label>
+    <label class="choice ok"><input type="radio" name="check" value="ok"> Tested — working OK</label>
+    <label class="choice bad"><input type="radio" name="check" value="bad"> Something's wrong</label>
+    <div id="fault-wrap" class="hidden">
+      <label for="note">What's wrong?</label>
+      <textarea id="note" maxlength="300" placeholder="e.g. joystick sticking, coin mech jammed, no sound"></textarea>
+    </div>
+    <div id="count-msg"></div>
+    <button id="btn-save" class="btn primary mt">Log tokens</button>
+    <button id="btn-back" class="btn quiet mt">Back</button>
+  </section>
+
+  <!-- Step 3: done -->
+  <section id="step-done" class="panel hidden">
+    <div class="done-big" id="done-n">0</div>
+    <p class="done-sub" id="done-sub"></p>
+    <div id="done-fault" class="msg info hidden">Fault reported — the machine's been flagged for repair.</div>
+    <button id="btn-another" class="btn primary mt">Log another machine</button>
+  </section>
+
+  <p class="dim small" style="text-align:center;margin-top:20px">Staff only. If your code doesn't work, ask Rob.</p>
+</div>
+<script type="module" src="staff.js"></script>
+</body>
+</html>

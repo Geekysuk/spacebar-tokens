@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
+<meta name="theme-color" content="#121113">
+<meta name="robots" content="noindex">
+<title>Spacebar tokens — admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="app.css">
+<link rel="manifest" href="manifest-admin.webmanifest">
+<link rel="icon" href="./icon.svg" type="image/svg+xml">
+</head>
+<body>
+
+<!-- Login -->
+<div id="login" class="wrap hidden">
+  <div class="staff-hero">
+    <img class="logo" src="./logo.svg" alt="Spacebar Arcade">
+    <p>Token tracking — admin</p>
+  </div>
+  <section class="panel">
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="username">
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password">
+    <div id="login-msg"></div>
+    <button id="btn-login" class="btn primary mt">Sign in</button>
+  </section>
+</div>
+
+<!-- App -->
+<div id="app" class="hidden">
+  <header class="topbar no-print">
+    <img class="logo" src="./logo.svg" alt="Spacebar Arcade">
+    <span class="tag">tokens</span>
+    <span class="spacer"></span>
+    <button id="btn-signout" class="btn auto quiet">Sign out</button>
+  </header>
+  <nav class="nav no-print">
+    <a href="#/overview" data-view="overview">Overview</a>
+    <a href="#/empties" data-view="empties">Empties</a>
+    <a href="#/faults" data-view="faults">Faults <span id="nav-faults"></span></a>
+    <a href="#/weekly" data-view="weekly">Weekly check</a>
+    <a href="#/machines" data-view="machines">Machines</a>
+    <a href="#/staff" data-view="staff">Staff codes</a>
+    <a href="#/sticker" data-view="sticker">Print QR</a>
+  </nav>
+  <main id="view" class="wrap wide"></main>
+</div>
+
+<div id="boot" class="wrap"><p class="muted">Loading…</p></div>
+
+<script type="module" src="admin.js"></script>
+</body>
+</html>

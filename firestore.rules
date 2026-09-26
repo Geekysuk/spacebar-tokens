@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Rob's Firebase Auth uid — Authentication → Users → copy the User UID
+    function isAdmin() {
+      return request.auth != null && request.auth.uid == "yTsmDLgPaDZBBvM5U8OrAwVy2vC2";
+    }
+    function staffDoc(h) { return get(/databases/$(database)/documents/staffCodes/$(h)); }
+    function staffOk(h) {
+      return h is string && h.size() == 64
+        && exists(/databases/$(database)/documents/staffCodes/$(h))
+        && staffDoc(h).data.active == true;
+    }
+    function machineDoc(t) { return get(/databases/$(database)/documents/machines/$(t)); }
+    function machineOk(t) {
+      return t is string && t.size() == 4
+        && exists(/databases/$(database)/documents/machines/$(t))
+        && machineDoc(t).data.active == true;
+    }
+    function baseOk(d) {
+      return machineOk(d.tag)
+        && d.machineName == machineDoc(d.tag).data.name
+        && staffOk(d.staffHash)
+        && d.staffName == staffDoc(d.staffHash).data.name
+        && d.at == request.time;
+    }
+
+    // Machines are keyed by their 4-digit code. Staff phones can look one up
+    // by code (get) but never list them all.
+    match /machines/{tag} {
+      allow get: if true;
+      allow list, write: if isAdmin();
+    }
+
+    // Staff codes are keyed by SHA-256 of the code. Public can only "get" one
+    // by hash (to find the name); only Rob can list/manage them.
+    match /staffCodes/{hash} {
+      allow get: if true;
+      allow list, write: if isAdmin();
+    }
+
+    match /empties/{id} {
+      allow read, update, delete: if isAdmin();
+      allow create: if isAdmin() || (
+        request.resource.data.keys().hasOnly(["tag", "machineName", "staffHash", "staffName", "at", "tokens", "ok", "note"])
+        && baseOk(request.resource.data)
+        && request.resource.data.tokens is int
+        && request.resource.data.tokens >= 0 && request.resource.data.tokens <= 100000
+        && request.resource.data.ok is bool
+        && request.resource.data.note is string && request.resource.data.note.size() <= 300
+      );
+    }
+
+    match /faults/{id} {
+      allow read, update, delete: if isAdmin();
+      allow create: if isAdmin() || (
+        request.resource.data.keys().hasOnly(["tag", "machineName", "staffHash", "staffName", "at", "note", "status", "emptyId"])
+        && baseOk(request.resource.data)
+        && request.resource.data.status == "open"
+        && request.resource.data.note is string
+        && request.resource.data.note.size() >= 1 && request.resource.data.note.size() <= 300
+        && request.resource.data.emptyId is string
+      );
+    }
+
+    match /weeks/{weekKey} {
+      allow read, write: if isAdmin();
+    }
+  }
+}
