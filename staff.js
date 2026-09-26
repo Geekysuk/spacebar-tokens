@@ -59,8 +59,7 @@ function renderChecks() {
 
   const faultBox = el("fault-open");
   if (st.faultOpen) {
-    const at = tsDate(st.faultAt);
-    faultBox.textContent = `Fault already reported: ${st.faultNote || "(no details)"} — ${st.faultBy || "staff"}${at ? ", " + fmtWhen.format(at) : ""}. Rob hasn't closed it yet.`;
+    faultBox.textContent = `Fault already reported: ${st.faultNote || "(no details)"}`;
     faultBox.classList.remove("hidden");
   } else faultBox.classList.add("hidden");
 
