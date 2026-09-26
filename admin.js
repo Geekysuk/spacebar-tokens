@@ -221,7 +221,7 @@ function empties() {
         ${groups[k].map(e => `
           <div class="list-item">
             <div class="main">
-              <div><b>${esc(e.machineName)}</b> <span class="dim small">${esc(e.tag)}</span> ${e.ok === false ? '<span class="pill bad">fault</span>' : e.check === "skipped" ? '<span class="pill open">not tested</span>' : ""}</div>
+              <div><b>${esc(e.machineName)}</b> <span class="dim small">${esc(e.tag)}</span> ${e.check === "bad" ? '<span class="pill bad">fault</span>' : e.check === "stillbroken" ? '<span class="pill bad">still broken</span>' : e.check === "skipped" ? '<span class="pill open">not tested</span>' : ""}</div>
               <div class="t">${fmtTime.format(tsDate(e.at))} · ${esc(e.staffName)}</div>
               ${e.note ? `<div class="note">${esc(e.note)}</div>` : ""}
             </div>
@@ -407,10 +407,21 @@ function wire(v) {
   }));
 
   // faults
-  v.querySelectorAll("[data-close-fault]").forEach(b => b.addEventListener("click", () =>
-    updateDoc(doc(db, "faults", b.dataset.closeFault), { status: "closed", closedAt: serverTimestamp() })));
-  v.querySelectorAll("[data-reopen-fault]").forEach(b => b.addEventListener("click", () =>
-    updateDoc(doc(db, "faults", b.dataset.reopenFault), { status: "open", closedAt: null })));
+  v.querySelectorAll("[data-close-fault]").forEach(b => b.addEventListener("click", async () => {
+    const f = S.faults.find(x => x.id === b.dataset.closeFault);
+    const batch = writeBatch(db);
+    batch.update(doc(db, "faults", f.id), { status: "closed", closedAt: serverTimestamp() });
+    const stillOpen = S.faults.some(x => x.tag === f.tag && x.status === "open" && x.id !== f.id);
+    if (!stillOpen) batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: false, faultNote: "", faultAt: null, faultBy: "", faultId: "" }, { merge: true });
+    await batch.commit();
+  }));
+  v.querySelectorAll("[data-reopen-fault]").forEach(b => b.addEventListener("click", async () => {
+    const f = S.faults.find(x => x.id === b.dataset.reopenFault);
+    const batch = writeBatch(db);
+    batch.update(doc(db, "faults", f.id), { status: "open", closedAt: null });
+    batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: true, faultNote: f.note, faultAt: f.at, faultBy: f.staffName, faultId: f.id }, { merge: true });
+    await batch.commit();
+  }));
 
   // weekly
   v.querySelectorAll("[data-week]").forEach(inp => {
