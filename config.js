@@ -9,4 +9,4 @@ export const firebaseConfig = {
 };
 
 // Public address the shared QR code points at (used on the sticker screen).
-export const STAFF_URL = "https://staff.spacebararcade.co.uk/";
+export const STAFF_URL = "https://spacebar.pinkysrentals.co.uk/";
