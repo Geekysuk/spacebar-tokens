@@ -161,6 +161,7 @@ input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-i
   color: var(--text);
   font-size: 15px;
 }
+.choice.disabled { opacity: 0.45; cursor: not-allowed; }
 .choice input { width: 20px; height: 20px; margin: 0; accent-color: var(--pink); }
 .choice.ok:has(input:checked) { border-color: var(--ok); }
 .choice.bad:has(input:checked) { border-color: var(--bad); }
