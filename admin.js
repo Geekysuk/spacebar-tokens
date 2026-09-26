@@ -1,6 +1,6 @@
 import {
   collection, doc, onSnapshot, query, orderBy, setDoc, updateDoc, deleteDoc, addDoc, getDoc,
-  serverTimestamp, Timestamp
+  serverTimestamp, Timestamp, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
@@ -296,6 +296,10 @@ function machines() {
       </div>
       <div id="am-msg"></div>
       <button id="am-save" class="btn primary mt">Add machine</button>
+      <label for="am-bulk" style="margin-top:18px">Or add several — one name per line (codes assigned from the next free number)</label>
+      <textarea id="am-bulk" placeholder="Mario Kart&#10;Pac Man&#10;Galaga"></textarea>
+      <div id="am-bulk-msg"></div>
+      <button id="am-bulk-save" class="btn mt">Add all</button>
     </section>
     <section class="panel">
       <h2>Machines (${S.machines.length})</h2>
@@ -432,6 +436,26 @@ function wire(v) {
     await setDoc(doc(db, "machines", tag), { name, tag, active: true, createdAt: serverTimestamp() });
     el("am-name").value = "";
     setMsg("am-msg", `Added ${name} as ${tag}.`, "good");
+  });
+  v.querySelector("#am-bulk-save")?.addEventListener("click", async () => {
+    const names = el("am-bulk").value.split("\n").map(x => x.trim()).filter(Boolean);
+    if (!names.length) return setMsg("am-bulk-msg", "Paste some names first.", "error");
+    const existing = new Set(S.machines.map(m => m.name.toLowerCase()));
+    const used = new Set(S.machines.map(m => m.tag));
+    let next = 1001; const batch = writeBatch(db); const added = [], skipped = [];
+    for (const name of names) {
+      if (existing.has(name.toLowerCase())) { skipped.push(name); continue; }
+      while (used.has(String(next))) next++;
+      const tag = String(next); used.add(tag); existing.add(name.toLowerCase());
+      batch.set(doc(db, "machines", tag), { name, tag, active: true, createdAt: serverTimestamp() });
+      added.push(`${tag} ${name}`);
+    }
+    if (!added.length) return setMsg("am-bulk-msg", "All of those already exist.", "error");
+    try {
+      await batch.commit();
+      el("am-bulk").value = "";
+      setMsg("am-bulk-msg", `Added ${added.length}: ${added.join(", ")}${skipped.length ? ` · skipped (already there): ${skipped.join(", ")}` : ""}`, "good");
+    } catch (e) { setMsg("am-bulk-msg", "Couldn't save: " + e.message, "error"); }
   });
   v.querySelectorAll("[data-rename]").forEach(b => b.addEventListener("click", async () => {
     const m = machineByTag(b.dataset.rename);
