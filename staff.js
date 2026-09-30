@@ -4,6 +4,7 @@ import { db, sha256, el, setMsg } from "./fb.js";
 
 const REMEMBER_MS = 12 * 60 * 60 * 1000;
 const TEST_DUE_MS = 48 * 60 * 60 * 1000;
+const FAULT_EMAIL_URL = "https://send-fault-email-77052047925.europe-west2.run.app";
 const state = { tag: "", machine: null, status: null, staffHash: "", staffName: "" };
 
 const digitsOnly = (input) => { input.value = input.value.replace(/\D/g, "").slice(0, 4); };
@@ -126,6 +127,12 @@ el("btn-save").addEventListener("click", async () => {
     }
     await batch.commit();
     remember();
+    if (check === "bad" || check === "stillbroken") {
+      const faultNote = check === "bad" ? note : ((state.status && state.status.faultNote) || "");
+      fetch(FAULT_EMAIL_URL, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: state.tag, staffHash: state.staffHash, kind: check, note: faultNote }) })
+        .catch(err => console.error("fault email failed", err));
+    }
     el("done-n").textContent = tokens.toLocaleString("en-GB");
     el("done-sub").textContent = `tokens logged from ${state.machine.name} by ${state.staffName}`;
     el("done-fault").classList.toggle("hidden", check !== "bad");
