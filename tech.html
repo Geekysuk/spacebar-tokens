@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://send-fault-email-77052047925.europe-west2.run.app; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
+<meta name="theme-color" content="#121113">
+<meta name="robots" content="noindex">
+<title>Spacebar jobs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="app.css">
+<link rel="icon" href="./icon.svg" type="image/svg+xml">
+</head>
+<body>
+<div class="wrap">
+  <div class="staff-hero">
+    <img class="logo" src="./logo.svg" alt="Spacebar Arcade">
+    <p>Technician jobs</p>
+  </div>
+
+  <section id="step-code" class="panel">
+    <label for="code">Your technician code</label>
+    <input id="code" class="code-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" placeholder="······" style="letter-spacing:.25em">
+    <div id="code-msg"></div>
+    <button id="btn-code" class="btn primary mt">Open my jobs</button>
+  </section>
+
+  <section id="step-jobs" class="hidden">
+    <div class="machine-card">
+      <span class="name" id="who"></span>
+      <a href="#" id="btn-out" class="who">Not you?</a>
+    </div>
+    <div id="jobs-msg"></div>
+    <div id="jobs"></div>
+    <button id="btn-refresh" class="btn quiet mt">Refresh</button>
+  </section>
+
+  <p class="dim small" style="text-align:center;margin-top:20px">Spacebar Arcade &middot; technician access</p>
+</div>
+<script src="tech.js"></script>
+</body>
+</html>
