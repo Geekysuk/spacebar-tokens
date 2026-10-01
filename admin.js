@@ -139,7 +139,7 @@ function route() {
 
 function render() {
   if (!auth.currentUser) return;
-  const open = S.faults.filter(f => f.status === "open").length;
+  const open = S.faults.filter(f => f.status !== "closed").length;
   el("nav-faults").textContent = open ? `(${open})` : "";
   const v = el("view");
   const fn = { overview, empties, faults, weekly, machines, staff, sticker }[view] || overview;
@@ -233,18 +233,29 @@ function empties() {
 
 function faults() {
   const open = S.faults.filter(f => f.status === "open");
-  const closed = S.faults.filter(f => f.status !== "open").slice(0, 50);
+  const prog = S.faults.filter(f => f.status === "inprogress");
+  const closed = S.faults.filter(f => f.status === "closed").slice(0, 50);
+  const pill = (f) => f.status === "inprogress"
+    ? `<span class="pill" style="background:rgba(46,127,194,0.18);color:#8ed1fc">in progress</span>`
+    : `<span class="pill ${f.status === "open" ? "open" : "closed"}">${f.status}</span>`;
+  const buttons = (f) => f.status === "open"
+    ? `<button class="btn auto" data-prog-fault="${f.id}">In progress</button><button class="btn auto" data-close-fault="${f.id}">Fixed</button>`
+    : f.status === "inprogress"
+      ? `<button class="btn auto" data-close-fault="${f.id}">Fixed</button><button class="btn auto quiet" data-open-fault="${f.id}">Back to open</button>`
+      : `<button class="btn auto quiet" data-reopen-fault="${f.id}">Reopen</button>`;
   const item = (f) => `
     <div class="list-item">
       <div class="main">
-        <div><b>${esc(f.machineName)}</b> <span class="dim small">${esc(f.tag)}</span> <span class="pill ${f.status === "open" ? "open" : "closed"}">${f.status}</span></div>
-        <div class="t">${fmtDay.format(tsDate(f.at))} ${fmtTime.format(tsDate(f.at))} · reported by ${esc(f.staffName)}${f.closedAt ? ` · closed ${fmtShort.format(tsDate(f.closedAt))}` : ""}</div>
+        <div><b>${esc(f.machineName)}</b> <span class="dim small">${esc(f.tag)}</span> ${pill(f)}</div>
+        <div class="t">${fmtDay.format(tsDate(f.at))} ${fmtTime.format(tsDate(f.at))} · reported by ${esc(f.staffName)}${f.status === "inprogress" && f.inProgressBy ? ` · in progress (${esc(f.inProgressBy)})` : ""}${f.closedAt ? ` · closed ${fmtShort.format(tsDate(f.closedAt))}${f.closedBy ? ` by ${esc(f.closedBy)}` : ""}` : ""}</div>
         <div class="note">${esc(f.note)}</div>
+        ${f.status === "closed" ? (f.closeNote ? `<div class="note" style="color:var(--blue-soft)">${esc(f.closeNote)}</div>` : "") : (f.techNote ? `<div class="note" style="color:var(--blue-soft)">${esc(f.inProgressBy || "Technician")}: ${esc(f.techNote)}</div>` : "")}
       </div>
-      ${f.status === "open" ? `<button class="btn auto" data-close-fault="${f.id}">Fixed</button>` : `<button class="btn auto quiet" data-reopen-fault="${f.id}">Reopen</button>`}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${buttons(f)}</div>
     </div>`;
   return `
-    <section class="panel"><h2>Open faults (${open.length})</h2>${open.map(item).join("") || `<p class="muted">Nothing open. Staff report faults on the token page when they tick "Something's wrong".</p>`}</section>
+    <section class="panel"><h2>Open (${open.length})</h2>${open.map(item).join("") || `<p class="muted">Nothing waiting. Staff report faults on the token page when they tick "Something's wrong".</p>`}</section>
+    <section class="panel"><h2>In progress (${prog.length})</h2>${prog.map(item).join("") || `<p class="muted">Nothing in progress. The technician (or you) can mark a job in progress once it's been looked at.</p>`}</section>
     <section class="panel"><h2>Fixed</h2>${closed.map(item).join("") || `<p class="muted">None yet.</p>`}</section>`;
 }
 
@@ -407,19 +418,39 @@ function wire(v) {
   }));
 
   // faults
+  const syncStatus = (batch, tag, skipId) => {
+    const rest = S.faults.filter(x => x.tag === tag && x.status !== "closed" && x.id !== skipId).sort((p, q) => tsDate(p.at) - tsDate(q.at));
+    if (!rest.length) batch.set(doc(db, "status", tag), { tag, faultOpen: false, faultState: "closed", faultNote: "", faultAt: null, faultBy: "", faultId: "", faultTechBy: "", faultTechNote: "" }, { merge: true });
+    else { const r = rest[0]; batch.set(doc(db, "status", tag), { tag, faultOpen: true, faultState: r.status === "inprogress" ? "inprogress" : "open", faultNote: r.note, faultAt: r.at, faultBy: r.staffName, faultId: r.id, faultTechBy: r.inProgressBy || "", faultTechNote: r.techNote || "" }, { merge: true }); }
+  };
+  v.querySelectorAll("[data-prog-fault]").forEach(b => b.addEventListener("click", async () => {
+    const f = S.faults.find(x => x.id === b.dataset.progFault);
+    const note = prompt("Note for " + f.machineName + " (optional) — e.g. waiting on a part", f.techNote || "");
+    if (note === null) return;
+    const batch = writeBatch(db);
+    batch.update(doc(db, "faults", f.id), { status: "inprogress", inProgressAt: serverTimestamp(), inProgressBy: "Rob", techNote: note.trim() });
+    batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: true, faultState: "inprogress", faultTechBy: "Rob", faultTechNote: note.trim() }, { merge: true });
+    await batch.commit();
+  }));
+  v.querySelectorAll("[data-open-fault]").forEach(b => b.addEventListener("click", async () => {
+    const f = S.faults.find(x => x.id === b.dataset.openFault);
+    const batch = writeBatch(db);
+    batch.update(doc(db, "faults", f.id), { status: "open", inProgressAt: null, inProgressBy: "", techNote: "" });
+    batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: true, faultState: "open", faultTechBy: "", faultTechNote: "" }, { merge: true });
+    await batch.commit();
+  }));
   v.querySelectorAll("[data-close-fault]").forEach(b => b.addEventListener("click", async () => {
     const f = S.faults.find(x => x.id === b.dataset.closeFault);
     const batch = writeBatch(db);
-    batch.update(doc(db, "faults", f.id), { status: "closed", closedAt: serverTimestamp() });
-    const stillOpen = S.faults.some(x => x.tag === f.tag && x.status === "open" && x.id !== f.id);
-    if (!stillOpen) batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: false, faultNote: "", faultAt: null, faultBy: "", faultId: "" }, { merge: true });
+    batch.update(doc(db, "faults", f.id), { status: "closed", closedAt: serverTimestamp(), closedBy: "Rob" });
+    syncStatus(batch, f.tag, f.id);
     await batch.commit();
   }));
   v.querySelectorAll("[data-reopen-fault]").forEach(b => b.addEventListener("click", async () => {
     const f = S.faults.find(x => x.id === b.dataset.reopenFault);
     const batch = writeBatch(db);
-    batch.update(doc(db, "faults", f.id), { status: "open", closedAt: null });
-    batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: true, faultNote: f.note, faultAt: f.at, faultBy: f.staffName, faultId: f.id }, { merge: true });
+    batch.update(doc(db, "faults", f.id), { status: "open", closedAt: null, closedBy: "", closeNote: "" });
+    batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: true, faultState: "open", faultNote: f.note, faultAt: f.at, faultBy: f.staffName, faultId: f.id, faultTechBy: "", faultTechNote: "" }, { merge: true });
     await batch.commit();
   }));
 
