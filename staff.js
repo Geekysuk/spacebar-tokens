@@ -59,9 +59,9 @@ function renderChecks() {
 
   const faultBox = el("fault-open");
   if (st.faultOpen) {
-    faultBox.textContent = `Fault already reported: ${st.faultNote || "(no details)"}`;
-    faultBox.classList.remove("hidden");
-  } else faultBox.classList.add("hidden");
+    faultBox.textContent = `Fault already reported: ${st.faultNote || "(no details)"}${st.faultState === "inprogress" ? " \u2014 IN PROGRESS: technician has looked at it" + (st.faultTechNote ? " (" + st.faultTechNote + ")" : "") : ""}`;
+    faultBox.className = "msg " + (st.faultState === "inprogress" ? "info" : "error");
+  } else faultBox.className = "msg error hidden";
 
   const opts = [];
   opts.push(["ok", "Tested — working OK", "ok"]);
@@ -121,7 +121,7 @@ el("btn-save").addEventListener("click", async () => {
     if (check !== "skipped") {
       const st = { tag: state.tag, staffHash: state.staffHash, lastTestedAt: serverTimestamp(), lastTestedBy: state.staffName, lastCheck: check,
         faultOpen: check === "bad" ? true : !!(state.status && state.status.faultOpen) };
-      if (check === "bad") Object.assign(st, { faultNote: note, faultAt: serverTimestamp(), faultBy: state.staffName, faultId: faultRef.id });
+      if (check === "bad") Object.assign(st, { faultNote: note, faultAt: serverTimestamp(), faultBy: state.staffName, faultId: faultRef.id, faultState: "open", faultTechBy: "", faultTechNote: "" });
       batch.set(doc(db, "status", state.tag), st, { merge: true });
     }
     await batch.commit();
