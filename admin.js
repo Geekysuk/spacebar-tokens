@@ -270,25 +270,29 @@ function weekly() {
     const k = dayKey(d);
     const end = new Date(weekStart(new Date(d.getTime() + 8 * DAY)).getTime() - 1);
     const collected = S.empties.filter(e => { const t = tsDate(e.at); return t >= d && t <= end; }).reduce((s, e) => s + (e.tokens || 0), 0);
-    const sold = S.weeks[k]?.tokensSold;
+    const sold = S.weeks[k]?.tokensSold ?? null;
     const startCount = S.weeks[k]?.startCount ?? null;
-    weeks.push({ k, start: d, end, collected, sold, startCount });
+    const topUp = S.weeks[k]?.topUp ?? null;
+    const nextStart = S.weeks[dayKey(weekStart(new Date(d.getTime() + 8 * DAY)))]?.startCount ?? null;
+    weeks.push({ k, start: d, end, collected, sold, startCount, topUp, nextStart });
     if (weeks.length > 104) break;
   }
   return `
     <section class="panel">
       <h2>Weekly check — sold vs collected</h2>
-      <p class="muted small">Weeks run Monday to Sunday. Enter the total token count on Monday as the start count, and type the tokens sold that week; the app adds up what staff emptied out of the machines. Difference = sold − collected (tokens still in machines or unaccounted for).</p>
+      <p class="muted small">Weeks run Monday to Sunday. Enter the tokens on the bar stock on Monday as the start count, then each week the tokens you topped up from the reserve and the tokens sold (type 0 if none). Collected comes from staff empties. Missing = start + collected + topped up − sold − next Monday's start count. Green = balanced, red = tokens unaccounted for. This week shows once next Monday's start count is in.</p>
       <div class="tbl-wrap"><table>
-        <thead><tr><th>Week</th><th class="num">Start count</th><th class="num">Sold</th><th class="num">Collected</th><th class="num">Diff</th></tr></thead>
+        <thead><tr><th>Week</th><th class="num">Start count</th><th class="num">Topped up</th><th class="num">Sold</th><th class="num">Collected</th><th class="num">Missing</th></tr></thead>
         <tbody>${weeks.map(w => {
-          const diff = (w.sold ?? null) === null ? null : w.sold - w.collected;
+          const missing = (w.startCount === null || w.topUp === null || w.sold === null || w.nextStart === null)
+            ? null : (w.startCount + w.collected + w.topUp - w.sold) - w.nextStart;
           return `<tr>
             <td class="wk">${weekLabel(w.start, w.end)}<span class="sub">${w.k === dayKey(thisMon) ? "this week" : ""}</span></td>
             <td class="num"><input type="number" inputmode="numeric" min="0" style="width:76px;padding:6px 8px;text-align:right" data-start="${w.k}" value="${w.startCount ?? ""}" placeholder="—"></td>
+            <td class="num"><input type="number" inputmode="numeric" min="0" style="width:76px;padding:6px 8px;text-align:right" data-topup="${w.k}" value="${w.topUp ?? ""}" placeholder="—"></td>
             <td class="num"><input type="number" inputmode="numeric" min="0" style="width:76px;padding:6px 8px;text-align:right" data-week="${w.k}" value="${w.sold ?? ""}" placeholder="—"></td>
             <td class="num">${n(w.collected)}</td>
-            <td class="num ${diff === null ? "dim" : diff >= 0 ? "diff-pos" : "diff-neg"}">${diff === null ? "—" : (diff > 0 ? "+" : "") + n(diff)}</td>
+            <td class="num ${missing === null ? "dim" : missing === 0 ? "diff-pos" : "diff-neg"}">${missing === null ? "—" : (missing > 0 ? "+" : "") + n(missing)}</td>
           </tr>`; }).join("")}</tbody>
       </table></div>
       <p class="dim small" style="margin-top:10px">Saves when you leave the box.</p>
@@ -479,6 +483,19 @@ function wire(v) {
       if (num === cur) return;
       await setDoc(doc(db, "weeks", k), { startCount: num, updatedAt: serverTimestamp() }, { merge: true });
       toast(`Saved start count for week of ${k}.`);
+    };
+    inp.addEventListener("change", save);
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") inp.blur(); });
+  });
+  v.querySelectorAll("[data-topup]").forEach(inp => {
+    const save = async () => {
+      const val = inp.value.trim();
+      const k = inp.dataset.topup;
+      const cur = S.weeks[k]?.topUp ?? null;
+      const num = val === "" ? null : parseInt(val, 10);
+      if (num === cur) return;
+      await setDoc(doc(db, "weeks", k), { topUp: num, updatedAt: serverTimestamp() }, { merge: true });
+      toast(`Saved top-up for week of ${k}.`);
     };
     inp.addEventListener("change", save);
     inp.addEventListener("keydown", e => { if (e.key === "Enter") inp.blur(); });

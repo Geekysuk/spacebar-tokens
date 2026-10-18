@@ -34,7 +34,7 @@ console.cloud.google.com → APIs & Services → Credentials → the "Browser ke
 2. Machines → add: Mario Kart, Ridge Racer, Wild Riders, Big Buck Hunter, TC2, Street Fighter (codes 1001–1006 are suggested automatically).
 3. Staff codes → add one per person. Write the code down when you add it — it's stored hashed and can't be shown again.
 4. Print QR → pick a machine → Print (50 × 68 mm, same size as the Pinky's stickers).
-5. Weekly check → type the tokens sold each week (Mon–Sun); collected comes from staff empties.
+5. Weekly check → each Monday, type the start count (tokens on the bar stock). Each week, type the tokens topped up from the reserve and the tokens sold (Mon–Sun). Collected comes from staff empties. Missing shows once next Monday's start count is in.
 
 ## Notes
 - Machines are keyed by their 4-digit code, so the code can't change after creation. Turn a machine off rather than deleting it.
