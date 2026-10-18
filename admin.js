@@ -6,9 +6,10 @@ import { onAuthStateChanged, signInWithEmailAndPassword, signOut }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import { db, auth, sha256, el, setMsg, esc } from "./fb.js";
 import { STAFF_URL } from "./config.js";
+import { tokensInWindow, repairCost, machinePayback, estimatePayback } from "./calc.js";
 
 /* ---------- state ---------- */
-const S = { machines: [], staff: [], empties: [], faults: [], weeks: {}, period: "week", ready: 0 };
+const S = { machines: [], staff: [], empties: [], faults: [], weeks: {}, details: {}, settings: {}, period: "week", ready: 0, _machineTag: null };
 let unsubs = [];
 let view = "overview";
 
@@ -119,6 +120,15 @@ function subscribe() {
     snap.docs.forEach(d => { S.weeks[d.id] = d.data(); });
     render();
   }));
+  unsubs.push(onSnapshot(collection(db, "machineDetails"), (snap) => {
+    S.details = {};
+    snap.docs.forEach(d => { S.details[d.id] = d.data(); });
+    render();
+  }, (err) => toast(`Couldn't load machine details: ${err.code || err.message}`)));
+  unsubs.push(onSnapshot(doc(db, "settings", "app"), (snap) => {
+    S.settings = snap.exists() ? snap.data() : {};
+    render();
+  }, (err) => toast(`Couldn't load settings: ${err.code || err.message}`)));
 }
 
 function toast(text) {
@@ -131,9 +141,11 @@ function toast(text) {
 /* ---------- routing ---------- */
 window.addEventListener("hashchange", route);
 function route() {
-  const m = location.hash.match(/^#\/([a-z]+)/);
+  const m = location.hash.match(/^#\/([a-z]+)(?:\/([^/?#]+))?/);
   view = m ? m[1] : "overview";
-  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("active", a.dataset.view === view));
+  S._machineTag = m && m[2] ? decodeURIComponent(m[2]) : null;
+  const navView = view === "machine" ? "machines" : view;
+  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("active", a.dataset.view === navView));
   render();
 }
 
@@ -142,7 +154,7 @@ function render() {
   const open = S.faults.filter(f => f.status !== "closed").length;
   el("nav-faults").textContent = open ? `(${open})` : "";
   const v = el("view");
-  const fn = { overview, empties, faults, weekly, machines, staff, sticker }[view] || overview;
+  const fn = { overview, empties, faults, weekly, machines, machine: machineDetail, staff, sticker, settings: settingsView }[view] || overview;
   v.innerHTML = fn();
   wire(v);
 }
@@ -300,8 +312,6 @@ function weekly() {
 }
 
 function machines() {
-  const counts = {};
-  S.empties.forEach(e => { counts[e.tag] = (counts[e.tag] || 0) + (e.tokens || 0); });
   const used = new Set(S.machines.map(m => m.tag));
   let next = 1001; while (used.has(String(next))) next++;
   return `
@@ -320,20 +330,8 @@ function machines() {
     </section>
     <section class="panel">
       <h2>Machines (${S.machines.length})</h2>
-      <div class="tbl-wrap"><table>
-        <thead><tr><th>Code</th><th>Name</th><th class="num">All-time tokens</th><th></th></tr></thead>
-        <tbody>${S.machines.map(m => `
-          <tr class="${m.active === false ? "inactive" : ""}">
-            <td><b>${esc(m.tag)}</b></td>
-            <td>${esc(m.name)}${m.active === false ? '<span class="sub">off — not shown to staff</span>' : ""}</td>
-            <td class="num">${n(counts[m.tag] || 0)}</td>
-            <td style="white-space:nowrap">
-              <button class="btn auto quiet" data-rename="${esc(m.tag)}">Rename</button>
-              <button class="btn auto quiet" data-toggle="${esc(m.tag)}">${m.active === false ? "Turn on" : "Turn off"}</button>
-            </td>
-          </tr>`).join("") || `<tr><td colspan="4" class="muted">No machines yet.</td></tr>`}</tbody>
-      </table></div>
-      <p class="dim small" style="margin-top:10px">Turn a machine off if it leaves the floor — its history stays. The code is fixed once created (it's on the sticker).</p>
+      <div class="mgrid">${S.machines.map(m => machineTile(m)).join("") || `<p class="muted">No machines yet.</p>`}</div>
+      <p class="dim small" style="margin-top:10px">Tap a machine for its photo, tokens, payback and repairs. Turn a machine off if it leaves the floor — its history stays. The code is fixed once created (it's on the sticker).</p>
     </section>`;
 }
 
@@ -385,6 +383,197 @@ function sticker() {
       <div class="mname">${esc(m.name)}</div>
       <div class="foot">Staff: scan, enter this code + your code<br>Spacebar Arcade</div>
     </div>` : `<p class="muted">Add a machine first.</p>`}`;
+}
+
+/* ---------- machines: stats, tiles, machine page, settings ---------- */
+const gbp = (x) => new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number(x) || 0);
+const empMine = (tag) => S.empties.filter(e => e.tag === tag).map(e => ({ tokens: e.tokens || 0, at: tsDate(e.at) }));
+
+// Typed £ amount to a number. Blank gives 0, bad input gives undefined.
+function parseMoney(s) {
+  const t = String(s ?? "").replace(/[£,\s]/g, "");
+  if (t === "") return 0;
+  const x = Number(t);
+  return Number.isFinite(x) && x >= 0 ? Math.round(x * 100) / 100 : undefined;
+}
+
+// Ask for parts and labour costs. Returns null if cancelled.
+function askRepairCost(f) {
+  const parts = prompt("Parts cost (£) — leave blank if none", f.partsCost ?? "");
+  if (parts === null) return null;
+  const labour = prompt("Labour cost (£) — leave blank if none", f.labourCost ?? "");
+  if (labour === null) return null;
+  const p = parseMoney(parts), l = parseMoney(labour);
+  if (p === undefined || l === undefined) { alert("Enter the cost as a number, e.g. 25 or 12.50."); return null; }
+  return { partsCost: p, labourCost: l };
+}
+
+function statusPill(s) {
+  return s === "inprogress"
+    ? `<span class="pill" style="background:rgba(46,127,194,0.18);color:#8ed1fc">in progress</span>`
+    : `<span class="pill ${s === "open" ? "open" : "closed"}">${s}</span>`;
+}
+
+// Shrink a photo to about 640px JPEG so it fits comfortably in the database.
+async function resizePhoto(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error("can't read that image"));
+      i.src = url;
+    });
+    if (!img.naturalWidth || !img.naturalHeight) throw new Error("can't read that image");
+    for (const [max, q] of [[640, 0.7], [640, 0.55], [480, 0.6]]) {
+      const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.naturalWidth * scale);
+      c.height = Math.round(img.naturalHeight * scale);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      const data = c.toDataURL("image/jpeg", q);
+      if (data.length <= 700000) return data;
+    }
+    throw new Error("that photo is too detailed, try a smaller one");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function machineStats(tag, now = new Date()) {
+  const mine = empMine(tag);
+  const repairs = S.faults.filter(f => f.tag === tag);
+  const tokenValue = typeof S.settings?.tokenValue === "number" ? S.settings.tokenValue : null;
+  const p = S.details[tag]?.purchasePrice;
+  const price = typeof p === "number" && p > 0 ? p : null;
+  const allTime = tokensInWindow(mine, null, now);
+  return {
+    allTime, tokenValue, price, repairs,
+    openRepairs: repairs.filter(f => f.status !== "closed").length,
+    ...machinePayback({ tokensAllTime: allTime, repairs, price, tokenValue })
+  };
+}
+
+function tileBacking(st) {
+  if (st.tokenValue == null) return `<span class="dim">set token value in Settings</span>`;
+  if (st.price == null) return `<span class="dim">no price entered yet</span>`;
+  if (st.paidBack) return `<span style="color:var(--ok)">Paid back</span>`;
+  return `${Math.round(st.pct)}% paid back · ${gbp(st.left)} to go`;
+}
+
+function machineTile(m) {
+  const st = machineStats(m.tag);
+  const photo = S.details[m.tag]?.photo;
+  return `
+    <a class="mtile ${m.active === false ? "inactive" : ""}" href="#/machine/${esc(m.tag)}">
+      <div class="mphoto">${photo ? `<img src="${esc(photo)}" alt="">` : `<span>${esc(m.tag)}</span>`}</div>
+      <div class="mbody">
+        <div class="tile-name">${esc(m.name)}</div>
+        <div class="dim small">${esc(m.tag)}${m.active === false ? " · off" : ""} · ${n(st.allTime)} tokens</div>
+        <div class="small" style="margin-top:6px">${tileBacking(st)}</div>
+        ${st.openRepairs ? `<div style="margin-top:8px"><span class="pill open">${st.openRepairs} open repair${st.openRepairs > 1 ? "s" : ""}</span></div>` : ""}
+      </div>
+    </a>`;
+}
+
+function machineDetail() {
+  const tag = S._machineTag;
+  const m = machineByTag(tag);
+  if (!m) return S.machines.length
+    ? `<div style="margin-bottom:12px"><a href="#/machines">← All machines</a></div><p class="muted">That machine isn't in the list.</p>`
+    : `<p class="muted">Loading…</p>`;
+  const now = new Date();
+  const st = machineStats(tag, now);
+  const d = S.details[tag] || {};
+  const mine = empMine(tag);
+  const first = mine.reduce((a, e) => Math.min(a, e.at.getTime()), now.getTime());
+
+  const periods = [["Last 7 days", 7], ["Last 14 days", 14], ["Last 30 days", 30], ["All time", null]];
+  const tokenTiles = periods.map(([label, days]) => {
+    const t = tokensInWindow(mine, days, now);
+    const span = days ?? Math.max(1, (now.getTime() - first) / DAY);
+    return `<div class="tile"><div class="k">${label}</div><div class="v">${n(t)}</div><div class="k">tokens · ${n(Math.round(t / span))}/day</div></div>`;
+  }).join("");
+
+  let payback;
+  if (st.tokenValue == null) {
+    payback = `<p class="muted">Set the value of one token in <a href="#/settings">Settings</a> to see payback.</p>`;
+  } else {
+    const est = st.price != null && !st.paidBack
+      ? estimatePayback({ left: st.left, tokens30: tokensInWindow(mine, 30, now), tokenValue: st.tokenValue, now })
+      : null;
+    const summary = st.price == null
+      ? `<p class="muted">Enter what you paid for it below to see payback.</p>`
+      : st.paidBack
+        ? `<p style="color:var(--ok)"><b>Paid back in full</b> · ${gbp(st.ahead)} ahead</p>`
+        : `<p><b>${Math.round(st.pct)}% paid back</b> · ${gbp(st.left)} still to recover</p>
+           <p class="dim small">${est && est.date ? `Estimated payback <b>${fmtDayYear.format(est.date)}</b>, at the last 30 days' takings` : "Not enough takings in the last 30 days to estimate a date."}</p>`;
+    payback = `
+      <div class="mline"><span>Earned · ${n(st.allTime)} tokens × ${gbp(st.tokenValue)}</span><b>${gbp(st.earned)}</b></div>
+      <div class="mline"><span>Repairs</span><b>${st.repairsTotal > 0 ? "−" : ""}${gbp(st.repairsTotal)}</b></div>
+      <div class="mline"><span>Net back so far</span><b>${gbp(st.net)}</b></div>
+      <div style="margin:12px 0">${summary}</div>`;
+  }
+
+  const priceBlock = `
+    <label for="mp-price">What you paid for it (£)</label>
+    <div class="row">
+      <input id="mp-price" type="number" inputmode="decimal" min="0" step="0.01" placeholder="e.g. 850" value="${d.purchasePrice ?? ""}">
+      <button id="mp-price-save" class="btn auto">Save</button>
+    </div>
+    <div id="mp-price-msg"></div>`;
+
+  const repairs = S.faults.filter(f => f.tag === tag);
+  const repairRows = repairs.map(f => `
+    <div class="list-item">
+      <div class="main">
+        <div>${statusPill(f.status)} <span class="dim small">${fmtDayYear.format(tsDate(f.at))}${f.closedAt ? ` · fixed ${fmtDayYear.format(tsDate(f.closedAt))}` : ""}</span></div>
+        <div class="note">${esc(f.note)}</div>
+        ${f.closeNote ? `<div class="note" style="color:var(--blue-soft)">${esc(f.closeNote)}</div>` : ""}
+        <div class="dim small">Parts ${gbp(f.partsCost)} · Labour ${gbp(f.labourCost)} · ${gbp(repairCost(f))}</div>
+      </div>
+      <button class="btn auto quiet" data-edit-cost="${f.id}">Cost</button>
+    </div>`).join("");
+
+  return `
+    <div style="margin-bottom:12px"><a href="#/machines">← All machines</a></div>
+    <section class="panel">
+      <div class="mbig">${d.photo ? `<img src="${esc(d.photo)}" alt="${esc(m.name)}">` : `<span class="dim">No photo yet</span>`}</div>
+      <button id="mp-pick" class="btn">${d.photo ? "Replace photo" : "Add photo"}</button>
+      <input id="mp-file" type="file" accept="image/*" style="display:none">
+      <div id="mp-msg"></div>
+      <h2 style="margin-top:14px">${esc(m.name)}</h2>
+      <div class="dim small">Code ${esc(m.tag)}${m.active === false ? " · off — not shown to staff" : ""}</div>
+      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn auto quiet" data-rename="${esc(m.tag)}">Rename</button>
+        <button class="btn auto quiet" data-toggle="${esc(m.tag)}">${m.active === false ? "Turn on" : "Turn off"}</button>
+      </div>
+    </section>
+    <section class="panel"><h2>Tokens</h2><div class="tiles">${tokenTiles}</div></section>
+    <section class="panel">
+      <h2>Payback</h2>
+      ${payback}
+      ${priceBlock}
+    </section>
+    <section class="panel">
+      <h2>Repairs (${repairs.length}) · ${gbp(st.repairsTotal)} in total</h2>
+      ${repairRows || `<p class="muted">No repairs logged for this machine.</p>`}
+    </section>`;
+}
+
+function settingsView() {
+  const tv = S.settings?.tokenValue;
+  return `
+    <section class="panel">
+      <h2>Token value</h2>
+      <p class="dim small">What one token is worth to you, in £. Every machine's payback uses it, so changing it here updates them all.</p>
+      <label for="set-token">£ per token</label>
+      <div class="row">
+        <input id="set-token" type="number" inputmode="decimal" min="0" step="0.01" placeholder="e.g. 0.50" value="${typeof tv === "number" ? tv : ""}">
+        <button id="set-token-save" class="btn primary auto">Save</button>
+      </div>
+      <div id="set-msg"></div>
+    </section>`;
 }
 
 /* ---------- wiring ---------- */
@@ -447,8 +636,10 @@ function wire(v) {
   }));
   v.querySelectorAll("[data-close-fault]").forEach(b => b.addEventListener("click", async () => {
     const f = S.faults.find(x => x.id === b.dataset.closeFault);
+    const cost = askRepairCost(f);
+    if (!cost) return;
     const batch = writeBatch(db);
-    batch.update(doc(db, "faults", f.id), { status: "closed", closedAt: serverTimestamp(), closedBy: "Rob" });
+    batch.update(doc(db, "faults", f.id), { status: "closed", closedAt: serverTimestamp(), closedBy: "Rob", ...cost });
     syncStatus(batch, f.tag, f.id);
     await batch.commit();
   }));
@@ -540,6 +731,47 @@ function wire(v) {
     const m = machineByTag(b.dataset.toggle);
     await updateDoc(doc(db, "machines", m.tag), { active: m.active === false });
   }));
+
+  // machine page: photo, purchase price, repair costs
+  v.querySelector("#mp-pick")?.addEventListener("click", () => v.querySelector("#mp-file").click());
+  v.querySelector("#mp-file")?.addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setMsg("mp-msg", "Saving photo…", "info");
+    try {
+      const photo = await resizePhoto(file);
+      await setDoc(doc(db, "machineDetails", S._machineTag), { photo, photoAt: serverTimestamp() }, { merge: true });
+      toast("Photo saved.");
+    } catch (err) {
+      setMsg("mp-msg", "Couldn't save that photo. " + (err.message || ""), "error");
+    }
+  });
+  v.querySelector("#mp-price-save")?.addEventListener("click", async () => {
+    const raw = el("mp-price").value.trim();
+    const price = raw === "" ? null : parseMoney(raw);
+    if (price === undefined || price === 0) return setMsg("mp-price-msg", "Enter what you paid, e.g. 850, or leave it blank.", "error");
+    try {
+      await setDoc(doc(db, "machineDetails", S._machineTag), { purchasePrice: price, updatedAt: serverTimestamp() }, { merge: true });
+      toast(price ? `Saved: ${gbp(price)}.` : "Price cleared.");
+    } catch (err) { setMsg("mp-price-msg", "Couldn't save: " + err.message, "error"); }
+  });
+  v.querySelectorAll("[data-edit-cost]").forEach(b => b.addEventListener("click", async () => {
+    const f = S.faults.find(x => x.id === b.dataset.editCost);
+    const cost = askRepairCost(f);
+    if (!cost) return;
+    await updateDoc(doc(db, "faults", f.id), cost);
+  }));
+
+  // settings
+  v.querySelector("#set-token-save")?.addEventListener("click", async () => {
+    const raw = el("set-token").value.trim();
+    const val = raw === "" ? undefined : parseMoney(raw);
+    if (val === undefined || val === 0) return setMsg("set-msg", "Enter the value of one token, e.g. 0.50.", "error");
+    try {
+      await setDoc(doc(db, "settings", "app"), { tokenValue: val, updatedAt: serverTimestamp() }, { merge: true });
+      toast(`Saved. One token is worth ${gbp(val)}.`);
+    } catch (err) { setMsg("set-msg", "Couldn't save: " + err.message, "error"); }
+  });
 
   // staff
   v.querySelector("#as-save")?.addEventListener("click", async () => {

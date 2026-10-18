@@ -35,6 +35,8 @@ console.cloud.google.com → APIs & Services → Credentials → the "Browser ke
 3. Staff codes → add one per person. Write the code down when you add it — it's stored hashed and can't be shown again.
 4. Print QR → pick a machine → Print (50 × 68 mm, same size as the Pinky's stickers).
 5. Weekly check → each Monday, type the start count (tokens on the bar stock). Each week, type the tokens topped up from the reserve and the tokens sold (Mon–Sun). Collected comes from staff empties. Missing shows once next Monday's start count is in.
+6. Settings → set what one token is worth in £. Machines → tap a machine to add its photo, what you paid for it and its repair costs (marking a fault Fixed asks for the costs).
+7. After the first deploy with machine pages: paste the contents of `firestore.rules` into Firebase Console → Firestore → Rules → Publish.
 
 ## Notes
 - Machines are keyed by their 4-digit code, so the code can't change after creation. Turn a machine off rather than deleting it.

@@ -67,5 +67,15 @@ service cloud.firestore {
     match /weeks/{weekKey} {
       allow read, write: if isAdmin();
     }
+
+    // Private per-machine details: photo and what Rob paid. Staff and public never read these.
+    match /machineDetails/{tag} {
+      allow read, write: if isAdmin();
+    }
+
+    // Private settings (value of one token in £).
+    match /settings/{id} {
+      allow read, write: if isAdmin();
+    }
   }
 }

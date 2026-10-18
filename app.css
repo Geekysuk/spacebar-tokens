@@ -282,3 +282,16 @@ td .sub { display: block; color: var(--dim); font-size: 12px; }
 }
 
 td.wk { white-space: nowrap; }
+
+/* Machines: tiles and machine page */
+.mgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.mtile { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; text-decoration: none; color: var(--text); }
+.mtile:hover { border-color: var(--pink); }
+.mtile.inactive { opacity: 0.55; }
+.mphoto { aspect-ratio: 4 / 3; background: var(--bg); display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 20px; overflow: hidden; }
+.mphoto img, .mbig img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mbody { padding: 10px 12px 12px; }
+.tile-name { font-family: var(--display); font-size: 17px; }
+.mbig { aspect-ratio: 4 / 3; background: var(--bg); border: 1px solid var(--line-soft); border-radius: var(--radius); display: flex; align-items: center; justify-content: center; overflow: hidden; margin-bottom: 10px; }
+.mline { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line-soft); font-variant-numeric: tabular-nums; }
+.mline b { font-weight: 700; }
