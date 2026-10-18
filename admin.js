@@ -271,19 +271,21 @@ function weekly() {
     const end = new Date(weekStart(new Date(d.getTime() + 8 * DAY)).getTime() - 1);
     const collected = S.empties.filter(e => { const t = tsDate(e.at); return t >= d && t <= end; }).reduce((s, e) => s + (e.tokens || 0), 0);
     const sold = S.weeks[k]?.tokensSold;
-    weeks.push({ k, start: d, end, collected, sold });
+    const startCount = S.weeks[k]?.startCount ?? null;
+    weeks.push({ k, start: d, end, collected, sold, startCount });
     if (weeks.length > 104) break;
   }
   return `
     <section class="panel">
       <h2>Weekly check — sold vs collected</h2>
-      <p class="muted small">Weeks run Monday to Sunday. Type the tokens sold that week; the app adds up what staff emptied out of the machines. Difference = sold − collected (tokens still in machines or unaccounted for).</p>
+      <p class="muted small">Weeks run Monday to Sunday. Enter the total token count on Monday as the start count, and type the tokens sold that week; the app adds up what staff emptied out of the machines. Difference = sold − collected (tokens still in machines or unaccounted for).</p>
       <div class="tbl-wrap"><table>
-        <thead><tr><th>Week</th><th class="num">Sold</th><th class="num">Collected</th><th class="num">Diff</th></tr></thead>
+        <thead><tr><th>Week</th><th class="num">Start count</th><th class="num">Sold</th><th class="num">Collected</th><th class="num">Diff</th></tr></thead>
         <tbody>${weeks.map(w => {
           const diff = (w.sold ?? null) === null ? null : w.sold - w.collected;
           return `<tr>
             <td class="wk">${weekLabel(w.start, w.end)}<span class="sub">${w.k === dayKey(thisMon) ? "this week" : ""}</span></td>
+            <td class="num"><input type="number" inputmode="numeric" min="0" style="width:76px;padding:6px 8px;text-align:right" data-start="${w.k}" value="${w.startCount ?? ""}" placeholder="—"></td>
             <td class="num"><input type="number" inputmode="numeric" min="0" style="width:76px;padding:6px 8px;text-align:right" data-week="${w.k}" value="${w.sold ?? ""}" placeholder="—"></td>
             <td class="num">${n(w.collected)}</td>
             <td class="num ${diff === null ? "dim" : diff >= 0 ? "diff-pos" : "diff-neg"}">${diff === null ? "—" : (diff > 0 ? "+" : "") + n(diff)}</td>
@@ -464,6 +466,19 @@ function wire(v) {
       if (num === cur) return;
       await setDoc(doc(db, "weeks", k), { tokensSold: num, updatedAt: serverTimestamp() }, { merge: true });
       toast(`Saved week of ${k}.`);
+    };
+    inp.addEventListener("change", save);
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") inp.blur(); });
+  });
+  v.querySelectorAll("[data-start]").forEach(inp => {
+    const save = async () => {
+      const val = inp.value.trim();
+      const k = inp.dataset.start;
+      const cur = S.weeks[k]?.startCount ?? null;
+      const num = val === "" ? null : parseInt(val, 10);
+      if (num === cur) return;
+      await setDoc(doc(db, "weeks", k), { startCount: num, updatedAt: serverTimestamp() }, { merge: true });
+      toast(`Saved start count for week of ${k}.`);
     };
     inp.addEventListener("change", save);
     inp.addEventListener("keydown", e => { if (e.key === "Enter") inp.blur(); });
