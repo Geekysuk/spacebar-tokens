@@ -2,7 +2,7 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Rob's Firebase Auth uid — Authentication → Users → copy the User UID
+    // Rob's Firebase Auth uid
     function isAdmin() {
       return request.auth != null && request.auth.uid == "yTsmDLgPaDZBBvM5U8OrAwVy2vC2";
     }
@@ -43,11 +43,13 @@ service cloud.firestore {
     match /empties/{id} {
       allow read, update, delete: if isAdmin();
       allow create: if isAdmin() || (
-        request.resource.data.keys().hasOnly(["tag", "machineName", "staffHash", "staffName", "at", "tokens", "ok", "note"])
+        request.resource.data.keys().hasOnly(["tag", "machineName", "staffHash", "staffName", "at", "tokens", "ok", "check", "note"])
         && baseOk(request.resource.data)
         && request.resource.data.tokens is int
         && request.resource.data.tokens >= 0 && request.resource.data.tokens <= 100000
         && request.resource.data.ok is bool
+        && request.resource.data.check in ["ok", "bad", "skipped", "stillbroken"]
+        && request.resource.data.ok == (request.resource.data.check in ["ok", "skipped"])
         && request.resource.data.note is string && request.resource.data.note.size() <= 300
       );
     }
@@ -62,6 +64,35 @@ service cloud.firestore {
         && request.resource.data.note.size() >= 1 && request.resource.data.note.size() <= 300
         && request.resource.data.emptyId is string
       );
+    }
+
+    // Per-machine status the staff page reads: last test + open fault.
+    // Staff may record a test or raise a fault; only Rob can clear a fault.
+    match /status/{tag} {
+      allow get: if true;
+      allow list, delete: if isAdmin();
+      allow create, update: if isAdmin() || (
+        request.resource.data.keys().hasOnly(["tag", "staffHash", "lastTestedAt", "lastTestedBy", "lastCheck", "faultOpen", "faultNote", "faultAt", "faultBy", "faultId", "faultState", "faultTechBy", "faultTechNote"])
+        && request.resource.data.tag == tag
+        && machineOk(tag)
+        && staffOk(request.resource.data.staffHash)
+        && request.resource.data.lastTestedBy == staffDoc(request.resource.data.staffHash).data.name
+        && request.resource.data.lastTestedAt == request.time
+        && request.resource.data.lastCheck in ["ok", "bad", "stillbroken"]
+        && request.resource.data.faultOpen is bool
+        && !(resource != null && resource.data.faultOpen == true && request.resource.data.faultOpen == false)
+      );
+    }
+
+    // Sent-email log, written by the send-fault-email function (admin SDK).
+    match /mail/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // Technician codes (SHA-256 hash as doc id). Only Rob manages them; the
+    // send-fault-email function checks them server-side with the admin SDK.
+    match /techCodes/{hash} {
+      allow read, write: if isAdmin();
     }
 
     match /weeks/{weekKey} {
