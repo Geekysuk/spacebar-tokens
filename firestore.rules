@@ -26,11 +26,25 @@ service cloud.firestore {
         && d.at == request.time;
     }
 
+    // Manager sessions. A manager signs in anonymously, then a sessions/{uid}
+    // record ties that sign-in to an active manager code. It lasts 8 hours and
+    // stops working as soon as the code is disabled, removed or stops being a manager.
+    function sess() { return get(/databases/$(database)/documents/sessions/$(request.auth.uid)); }
+    function isManager() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/sessions/$(request.auth.uid))
+        && sess().data.role == "manager"
+        && sess().data.at + duration.value(8, 'h') > request.time
+        && staffOk(sess().data.staffHash)
+        && staffDoc(sess().data.staffHash).data.get('role', 'general') == "manager";
+    }
+
     // Machines are keyed by their 4-digit code. Staff phones can look one up
     // by code (get) but never list them all.
     match /machines/{tag} {
       allow get: if true;
-      allow list, write: if isAdmin();
+      allow list: if isAdmin() || isManager();
+      allow write: if isAdmin();
     }
 
     // Staff codes are keyed by SHA-256 of the code. Public can only "get" one
@@ -41,7 +55,8 @@ service cloud.firestore {
     }
 
     match /empties/{id} {
-      allow read, update, delete: if isAdmin();
+      allow read: if isAdmin() || isManager();
+      allow update, delete: if isAdmin();
       allow create: if isAdmin() || (
         request.resource.data.keys().hasOnly(["tag", "machineName", "staffHash", "staffName", "at", "tokens", "ok", "check", "note"])
         && baseOk(request.resource.data)
@@ -55,7 +70,8 @@ service cloud.firestore {
     }
 
     match /faults/{id} {
-      allow read, update, delete: if isAdmin();
+      allow read: if isAdmin() || isManager();
+      allow update, delete: if isAdmin();
       allow create: if isAdmin() || (
         request.resource.data.keys().hasOnly(["tag", "machineName", "staffHash", "staffName", "at", "note", "status", "emptyId"])
         && baseOk(request.resource.data)
@@ -96,7 +112,25 @@ service cloud.firestore {
     }
 
     match /weeks/{weekKey} {
+      allow read: if isAdmin() || isManager();
+      allow write: if isAdmin();
+    }
+
+    // Repair costs (parts and labour). Rob only. Managers see the repair history, never the money.
+    match /faultCosts/{id} {
       allow read, write: if isAdmin();
+    }
+
+    // Manager sessions, created when a manager code is entered after anonymous sign-in.
+    // Only the owner can read or delete their own session.
+    match /sessions/{uid} {
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(["staffHash", "role", "at"])
+        && request.resource.data.role == "manager"
+        && request.resource.data.at == request.time
+        && staffOk(request.resource.data.staffHash)
+        && staffDoc(request.resource.data.staffHash).data.get('role', 'general') == "manager";
     }
 
     // Private per-machine details: photo and what Rob paid. Staff and public never read these.

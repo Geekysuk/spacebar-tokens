@@ -1,17 +1,19 @@
 import {
   collection, doc, onSnapshot, query, orderBy, setDoc, updateDoc, deleteDoc, addDoc, getDoc,
-  serverTimestamp, Timestamp, writeBatch
+  serverTimestamp, Timestamp, writeBatch, deleteField
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut }
+import { onAuthStateChanged, signInAnonymously, signInWithEmailAndPassword, signOut }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import { db, auth, sha256, el, setMsg, esc } from "./fb.js";
 import { STAFF_URL } from "./config.js";
 import { tokensInWindow, repairCost, machinePayback, estimatePayback } from "./calc.js";
 
 /* ---------- state ---------- */
-const S = { machines: [], staff: [], empties: [], faults: [], weeks: {}, details: {}, settings: {}, period: "week", ready: 0, _machineTag: null };
+const S = { machines: [], staff: [], empties: [], faults: [], weeks: {}, details: {}, settings: {}, costs: {}, period: "week", ready: 0, _machineTag: null, role: null, managerLogin: false };
 let unsubs = [];
 let view = "overview";
+// Views only Rob can open. Managers get a note instead.
+const ADMIN_ONLY = ["staff", "sticker", "settings"];
 
 /* ---------- helpers ---------- */
 const DAY = 86400000;
@@ -70,7 +72,7 @@ function periodRange() {
 let idleTimer;
 function resetIdle() {
   clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => signOut(auth), 30 * 60 * 1000);
+  idleTimer = setTimeout(() => endSession(), 30 * 60 * 1000);
 }
 ["click", "keydown", "touchstart", "scroll"].forEach(ev => document.addEventListener(ev, resetIdle, { passive: true }));
 
@@ -84,22 +86,70 @@ el("btn-login").addEventListener("click", async () => {
   } finally { btn.disabled = false; }
 });
 el("password").addEventListener("keydown", e => { if (e.key === "Enter") el("btn-login").click(); });
-el("btn-signout").addEventListener("click", () => signOut(auth));
+// Signing out. A manager's session record goes too, so the code can't be reused from it.
+async function endSession() {
+  const u = auth.currentUser;
+  if (u && u.isAnonymous) { try { await deleteDoc(doc(db, "sessions", u.uid)); } catch (e) { /* already gone */ } }
+  return signOut(auth);
+}
+el("btn-signout").addEventListener("click", endSession);
 
-onAuthStateChanged(auth, (user) => {
+onAuthStateChanged(auth, async (user) => {
   el("boot").classList.add("hidden");
   if (!user) {
+    S.role = null;
     unsubs.forEach(u => u()); unsubs = [];
     el("app").classList.add("hidden");
     el("login").classList.remove("hidden");
     return;
   }
+  if (S.managerLogin) return; // the manager sign-in button finishes this
+  if (user.isAnonymous) {
+    // A returning manager needs a live session (8 hours), or they're signed out.
+    const s = await getDoc(doc(db, "sessions", user.uid)).catch(() => null);
+    const fresh = !!s && s.exists() && Date.now() - tsDate(s.data().at).getTime() < 8 * 3600 * 1000;
+    if (!fresh) return endSession();
+  }
+  enter(user);
+});
+
+// Manager sign-in: the 4-digit code must belong to an active manager.
+el("mgr-btn").addEventListener("click", async () => {
+  setMsg("mgr-msg", "");
+  const code = el("mgr-code").value.trim();
+  if (!/^\d{4}$/.test(code)) return setMsg("mgr-msg", "Enter your 4-digit code.", "error");
+  const btn = el("mgr-btn"); btn.disabled = true;
+  S.managerLogin = true;
+  try {
+    const hash = await sha256(code);
+    const sc = await getDoc(doc(db, "staffCodes", hash));
+    if (!sc.exists() || sc.data().active === false || sc.data().role !== "manager") throw Object.assign(new Error("not a manager"), { code: "not-manager" });
+    const cred = await signInAnonymously(auth);
+    await setDoc(doc(db, "sessions", cred.user.uid), { staffHash: hash, role: "manager", at: serverTimestamp() });
+    S.managerLogin = false;
+    el("mgr-code").value = "";
+    enter(cred.user);
+  } catch (e) {
+    S.managerLogin = false;
+    if (auth.currentUser && auth.currentUser.isAnonymous) { try { await signOut(auth); } catch (x) { /* ignore */ } }
+    setMsg("mgr-msg", e.code === "auth/operation-not-allowed"
+      ? "Manager sign-in isn't switched on in Firebase yet (Authentication → Sign-in method → Anonymous)."
+      : e.code === "not-manager" ? "That code isn't a manager code." : "Couldn't sign in. Try again.", "error");
+  } finally { btn.disabled = false; }
+});
+el("mgr-code").addEventListener("keydown", e => { if (e.key === "Enter") el("mgr-btn").click(); });
+
+function enter(user) {
+  S.role = user.isAnonymous ? "manager" : "admin";
   el("login").classList.add("hidden");
   el("app").classList.remove("hidden");
+  el("app-tag").textContent = S.role === "manager" ? "manager view" : "tokens";
+  document.querySelectorAll("[data-admin]").forEach(a => a.classList.toggle("hidden", S.role !== "admin"));
   resetIdle();
+  unsubs.forEach(u => u()); unsubs = [];
   subscribe();
   route();
-});
+}
 
 /* ---------- data ---------- */
 function subscribe() {
@@ -112,14 +162,20 @@ function subscribe() {
   }, (err) => { console.error(key, err); toast(`Couldn't load ${key}: ${err.code || err.message}`); });
 
   unsubs.push(sub(query(collection(db, "machines"), orderBy("name")), "machines"));
-  unsubs.push(sub(query(collection(db, "staffCodes"), orderBy("name")), "staff"));
   unsubs.push(sub(query(collection(db, "empties"), orderBy("at", "desc")), "empties"));
-  unsubs.push(sub(query(collection(db, "faults"), orderBy("at", "desc")), "faults"));
+  unsubs.push(sub(query(collection(db, "faults"), orderBy("at", "desc")), "faults", S.role === "admin" ? migrateLegacyCosts : null));
   unsubs.push(onSnapshot(collection(db, "weeks"), (snap) => {
     S.weeks = {};
     snap.docs.forEach(d => { S.weeks[d.id] = d.data(); });
     render();
   }));
+  if (S.role !== "admin") return; // managers stop here: no staff codes, money or settings
+  unsubs.push(sub(query(collection(db, "staffCodes"), orderBy("name")), "staff"));
+  unsubs.push(onSnapshot(collection(db, "faultCosts"), (snap) => {
+    S.costs = {};
+    snap.docs.forEach(d => { S.costs[d.id] = d.data(); });
+    render();
+  }, (err) => toast(`Couldn't load repair costs: ${err.code || err.message}`)));
   unsubs.push(onSnapshot(collection(db, "machineDetails"), (snap) => {
     S.details = {};
     snap.docs.forEach(d => { S.details[d.id] = d.data(); });
@@ -129,6 +185,25 @@ function subscribe() {
     S.settings = snap.exists() ? snap.data() : {};
     render();
   }, (err) => toast(`Couldn't load settings: ${err.code || err.message}`)));
+}
+
+// Repair costs used to sit on the fault itself. Move them to faultCosts (Rob only) once,
+// so managers can read the repair history without the money. Runs for Rob's session only.
+let migrating = false;
+async function migrateLegacyCosts() {
+  if (migrating || S.role !== "admin") return;
+  const legacy = S.faults.filter(f => f.partsCost !== undefined || f.labourCost !== undefined);
+  if (!legacy.length) return;
+  migrating = true;
+  try {
+    const batch = writeBatch(db);
+    for (const f of legacy) {
+      batch.set(doc(db, "faultCosts", f.id), { partsCost: Number(f.partsCost) || 0, labourCost: Number(f.labourCost) || 0, updatedAt: serverTimestamp() }, { merge: true });
+      batch.update(doc(db, "faults", f.id), { partsCost: deleteField(), labourCost: deleteField() });
+    }
+    await batch.commit();
+  } catch (e) { toast("Couldn't move old repair costs: " + (e.code || e.message)); }
+  finally { migrating = false; }
 }
 
 function toast(text) {
@@ -150,18 +225,29 @@ function route() {
 }
 
 function render() {
-  if (!auth.currentUser) return;
+  if (!auth.currentUser || !S.role) return;
   const open = S.faults.filter(f => f.status !== "closed").length;
   el("nav-faults").textContent = open ? `(${open})` : "";
   const v = el("view");
+  if (S.role === "manager" && ADMIN_ONLY.includes(view)) { v.innerHTML = `<p class="muted">Only Rob can open this page.</p>`; return; }
   const fn = { overview, empties, faults, weekly, machines, machine: machineDetail, staff, sticker, settings: settingsView }[view] || overview;
   v.innerHTML = fn();
   wire(v);
 }
 
 /* ---------- views ---------- */
+// Who logged the most empties and reported the most faults in a period.
+function staffStats(from, to) {
+  const rows = {};
+  const row = (name) => (rows[name || "—"] ||= { name: name || "—", empties: 0, tokens: 0, faults: 0 });
+  S.empties.forEach(e => { const t = tsDate(e.at); if (t >= from && t <= to) { const r = row(e.staffName); r.empties++; r.tokens += e.tokens || 0; } });
+  S.faults.forEach(f => { const t = tsDate(f.at); if (t >= from && t <= to) row(f.staffName).faults++; });
+  return Object.values(rows).sort((a, b) => b.empties - a.empties || b.faults - a.faults || a.name.localeCompare(b.name));
+}
+
 function overview() {
   const { from, to, label } = periodRange();
+  const staffRows = staffStats(from, to);
   const days = Math.max(1, (to - from) / DAY);
   const inRange = S.empties.filter(e => { const d = tsDate(e.at); return d >= from && d <= to; });
   const totals = {};
@@ -195,6 +281,13 @@ function overview() {
           <div class="bar"><i style="--w:${(100 * r.tokens / max).toFixed(1)}%"></i></div>
           <div class="meta">${r.count} ${r.count === 1 ? "empty" : "empties"} · ${(r.tokens / days).toFixed(1)}/day · ${grand ? (100 * r.tokens / grand).toFixed(0) : 0}% of all tokens</div>
         </div>`).join("") : `<p class="muted">No machines yet — add them under Machines.</p>`}
+    </section>
+    <section class="panel">
+      <h2>Staff · ${esc(label)}</h2>
+      ${staffRows.length ? `<div class="tbl-wrap"><table>
+        <thead><tr><th>Name</th><th class="num">Empties</th><th class="num">Tokens</th><th class="num">Faults reported</th></tr></thead>
+        <tbody>${staffRows.map(s => `<tr><td>${esc(s.name)}</td><td class="num">${n(s.empties)}</td><td class="num">${n(s.tokens)}</td><td class="num">${n(s.faults)}</td></tr>`).join("")}</tbody>
+      </table></div>` : `<p class="muted">Nothing logged in this period.</p>`}
     </section>`;
 }
 
@@ -210,7 +303,7 @@ function empties() {
   const dtDefault = `${dayKey(nowLocal)}T${fmtTime.format(nowLocal)}`;
 
   return `
-    <section class="panel">
+    ${S.role === "admin" ? `<section class="panel">
       <h2>Add an empty (Rob)</h2>
       <div class="row">
         <div><label>Machine</label><select id="ae-machine">${S.machines.filter(m => m.active !== false).map(m => `<option value="${esc(m.tag)}">${esc(m.name)}</option>`).join("")}</select></div>
@@ -220,7 +313,7 @@ function empties() {
       <label>Note (optional)</label><input id="ae-note" type="text" maxlength="300">
       <div id="ae-msg"></div>
       <button id="ae-save" class="btn primary mt">Add empty</button>
-    </section>
+    </section>` : ""}
     <section class="panel">
       <h2>All empties</h2>
       <div class="filters">
@@ -238,7 +331,7 @@ function empties() {
               ${e.note ? `<div class="note">${esc(e.note)}</div>` : ""}
             </div>
             <div class="n">${n(e.tokens)}</div>
-            <button class="btn auto quiet" data-del-empty="${e.id}" title="Delete">✕</button>
+            ${S.role === "admin" ? `<button class="btn auto quiet" data-del-empty="${e.id}" title="Delete">✕</button>` : ""}
           </div>`).join("")}`).join("") || `<p class="muted">Nothing logged yet.</p>`}
     </section>`;
 }
@@ -250,7 +343,7 @@ function faults() {
   const pill = (f) => f.status === "inprogress"
     ? `<span class="pill" style="background:rgba(46,127,194,0.18);color:#8ed1fc">in progress</span>`
     : `<span class="pill ${f.status === "open" ? "open" : "closed"}">${f.status}</span>`;
-  const buttons = (f) => f.status === "open"
+  const buttons = (f) => S.role !== "admin" ? "" : f.status === "open"
     ? `<button class="btn auto" data-prog-fault="${f.id}">In progress</button><button class="btn auto" data-close-fault="${f.id}">Fixed</button>`
     : f.status === "inprogress"
       ? `<button class="btn auto" data-close-fault="${f.id}">Fixed</button><button class="btn auto quiet" data-open-fault="${f.id}">Back to open</button>`
@@ -272,6 +365,7 @@ function faults() {
 }
 
 function weekly() {
+  const ro = S.role === "admin" ? "" : " disabled"; // managers read the weekly check, not edit it
   const now = new Date();
   const thisMon = weekStart(now);
   let firstMon = S.empties.length ? weekStart(tsDate(S.empties[S.empties.length - 1].at)) : thisMon;
@@ -300,22 +394,23 @@ function weekly() {
             ? null : (w.startCount + w.collected + w.topUp - w.sold) - w.nextStart;
           return `<tr>
             <td class="wk">${weekLabel(w.start, w.end)}<span class="sub">${w.k === dayKey(thisMon) ? "this week" : ""}</span></td>
-            <td class="num"><input type="number" inputmode="numeric" min="0" style="width:76px;padding:6px 8px;text-align:right" data-start="${w.k}" value="${w.startCount ?? ""}" placeholder="—"></td>
-            <td class="num"><input type="number" inputmode="numeric" min="0" style="width:76px;padding:6px 8px;text-align:right" data-topup="${w.k}" value="${w.topUp ?? ""}" placeholder="—"></td>
-            <td class="num"><input type="number" inputmode="numeric" min="0" style="width:76px;padding:6px 8px;text-align:right" data-week="${w.k}" value="${w.sold ?? ""}" placeholder="—"></td>
+            <td class="num"><input type="number" inputmode="numeric" min="0" style="width:76px;padding:6px 8px;text-align:right" data-start="${w.k}" value="${w.startCount ?? ""}" placeholder="—"${ro}></td>
+            <td class="num"><input type="number" inputmode="numeric" min="0" style="width:76px;padding:6px 8px;text-align:right" data-topup="${w.k}" value="${w.topUp ?? ""}" placeholder="—"${ro}></td>
+            <td class="num"><input type="number" inputmode="numeric" min="0" style="width:76px;padding:6px 8px;text-align:right" data-week="${w.k}" value="${w.sold ?? ""}" placeholder="—"${ro}></td>
             <td class="num">${n(w.collected)}</td>
             <td class="num ${missing === null ? "dim" : missing === 0 ? "diff-pos" : "diff-neg"}">${missing === null ? "—" : (missing > 0 ? "+" : "") + n(missing)}</td>
           </tr>`; }).join("")}</tbody>
       </table></div>
-      <p class="dim small" style="margin-top:10px">Saves when you leave the box.</p>
+      ${S.role === "admin" ? `<p class="dim small" style="margin-top:10px">Saves when you leave the box.</p>` : ""}
     </section>`;
 }
 
 function machines() {
+  const admin = S.role === "admin";
   const used = new Set(S.machines.map(m => m.tag));
   let next = 1001; while (used.has(String(next))) next++;
   return `
-    <section class="panel">
+    ${admin ? `<section class="panel">
       <h2>Add a machine</h2>
       <div class="row">
         <div><label>Name</label><input id="am-name" type="text" maxlength="60" placeholder="e.g. Mario Kart"></div>
@@ -327,13 +422,17 @@ function machines() {
       <textarea id="am-bulk" placeholder="Mario Kart&#10;Pac Man&#10;Galaga"></textarea>
       <div id="am-bulk-msg"></div>
       <button id="am-bulk-save" class="btn mt">Add all</button>
-    </section>
+    </section>` : ""}
     <section class="panel">
       <h2>Machines (${S.machines.length})</h2>
       <div class="mgrid">${S.machines.map(m => machineTile(m)).join("") || `<p class="muted">No machines yet.</p>`}</div>
-      <p class="dim small" style="margin-top:10px">Tap a machine for its photo, tokens, payback and repairs. Turn a machine off if it leaves the floor — its history stays. The code is fixed once created (it's on the sticker).</p>
+      <p class="dim small" style="margin-top:10px">${admin ? "Tap a machine for its photo, tokens, payback and repairs. Turn a machine off if it leaves the floor — its history stays. The code is fixed once created (it's on the sticker)." : "Tap a machine for its tokens and repairs."}</p>
     </section>`;
 }
+
+// Access levels for a staff code. Repair is Michael's technician page; it uses its own tech code.
+const ROLES = [["general", "General"], ["repair", "Repair"], ["manager", "Manager"]];
+const roleOptions = (cur) => ROLES.map(([v, t]) => `<option value="${v}" ${cur === v ? "selected" : ""}>${t}</option>`).join("");
 
 function staff() {
   const counts = {};
@@ -344,24 +443,26 @@ function staff() {
       <div class="row">
         <div><label>Name</label><input id="as-name" type="text" maxlength="40"></div>
         <div><label>4-digit code</label><input id="as-code" type="tel" inputmode="numeric" maxlength="4"></div>
+        <div><label>Access</label><select id="as-role">${roleOptions("general")}</select></div>
       </div>
       <div id="as-msg"></div>
       <button id="as-save" class="btn primary mt">Add code</button>
-      <p class="dim small" style="margin-top:10px">Codes are stored hashed — the app can't show you a code later, so write it down when you give it out. One code per person so empties are attributable.</p>
+      <p class="dim small" style="margin-top:10px">General: logs empties and reports faults on the staff page. Repair: the technician page (their own tech code). Manager: the manager view (performance, not money or settings). Codes are stored hashed, so write each one down when you give it out. One code per person so empties are attributable.</p>
     </section>
     <section class="panel">
       <h2>Staff (${S.staff.length})</h2>
       <div class="tbl-wrap"><table>
-        <thead><tr><th>Name</th><th class="num">Empties logged</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th class="num">Empties logged</th><th>Access</th><th></th></tr></thead>
         <tbody>${S.staff.map(s => `
           <tr class="${s.active === false ? "inactive" : ""}">
             <td>${esc(s.name)}${s.active === false ? '<span class="sub">disabled</span>' : ""}</td>
             <td class="num">${n(counts[s.id] || 0)}</td>
+            <td><select data-staff-role="${s.id}">${roleOptions(s.role || "general")}</select></td>
             <td style="white-space:nowrap">
               <button class="btn auto quiet" data-staff-toggle="${s.id}">${s.active === false ? "Enable" : "Disable"}</button>
               <button class="btn auto danger" data-staff-del="${s.id}">Remove</button>
             </td>
-          </tr>`).join("") || `<tr><td colspan="3" class="muted">No staff codes yet.</td></tr>`}</tbody>
+          </tr>`).join("") || `<tr><td colspan="4" class="muted">No staff codes yet.</td></tr>`}</tbody>
       </table></div>
     </section>`;
 }
@@ -398,10 +499,10 @@ function parseMoney(s) {
 }
 
 // Ask for parts and labour costs. Returns null if cancelled.
-function askRepairCost(f) {
-  const parts = prompt("Parts cost (£) — leave blank if none", f.partsCost ?? "");
+function askRepairCost(prev = {}) {
+  const parts = prompt("Parts cost (£) — leave blank if none", prev.partsCost ?? "");
   if (parts === null) return null;
-  const labour = prompt("Labour cost (£) — leave blank if none", f.labourCost ?? "");
+  const labour = prompt("Labour cost (£) — leave blank if none", prev.labourCost ?? "");
   if (labour === null) return null;
   const p = parseMoney(parts), l = parseMoney(labour);
   if (p === undefined || l === undefined) { alert("Enter the cost as a number, e.g. 25 or 12.50."); return null; }
@@ -440,9 +541,12 @@ async function resizePhoto(file) {
   }
 }
 
+// A repair with its money (kept in faultCosts, Rob only). Managers get no costs.
+const withCosts = (f) => ({ ...f, ...(S.costs[f.id] || {}) });
+
 function machineStats(tag, now = new Date()) {
   const mine = empMine(tag);
-  const repairs = S.faults.filter(f => f.tag === tag);
+  const repairs = S.faults.filter(f => f.tag === tag).map(withCosts);
   const tokenValue = typeof S.settings?.tokenValue === "number" ? S.settings.tokenValue : null;
   const p = S.details[tag]?.purchasePrice;
   const price = typeof p === "number" && p > 0 ? p : null;
@@ -455,6 +559,7 @@ function machineStats(tag, now = new Date()) {
 }
 
 function tileBacking(st) {
+  if (S.role !== "admin") return ""; // money is Rob's
   if (st.tokenValue == null) return `<span class="dim">set token value in Settings</span>`;
   if (st.price == null) return `<span class="dim">no price entered yet</span>`;
   if (st.paidBack) return `<span style="color:var(--ok)">Paid back</span>`;
@@ -477,6 +582,7 @@ function machineTile(m) {
 }
 
 function machineDetail() {
+  const admin = S.role === "admin";
   const tag = S._machineTag;
   const m = machineByTag(tag);
   if (!m) return S.machines.length
@@ -523,21 +629,21 @@ function machineDetail() {
     </div>
     <div id="mp-price-msg"></div>`;
 
-  const repairs = S.faults.filter(f => f.tag === tag);
+  const repairs = S.faults.filter(f => f.tag === tag).map(withCosts);
   const repairRows = repairs.map(f => `
     <div class="list-item">
       <div class="main">
         <div>${statusPill(f.status)} <span class="dim small">${fmtDayYear.format(tsDate(f.at))}${f.closedAt ? ` · fixed ${fmtDayYear.format(tsDate(f.closedAt))}` : ""}</span></div>
         <div class="note">${esc(f.note)}</div>
         ${f.closeNote ? `<div class="note" style="color:var(--blue-soft)">${esc(f.closeNote)}</div>` : ""}
-        <div class="dim small">Parts ${gbp(f.partsCost)} · Labour ${gbp(f.labourCost)} · ${gbp(repairCost(f))}</div>
+        ${admin ? `<div class="dim small">Parts ${gbp(f.partsCost)} · Labour ${gbp(f.labourCost)} · ${gbp(repairCost(f))}</div>` : ""}
       </div>
-      <button class="btn auto quiet" data-edit-cost="${f.id}">Cost</button>
+      ${admin ? `<button class="btn auto quiet" data-edit-cost="${f.id}">Cost</button>` : ""}
     </div>`).join("");
 
   return `
     <div style="margin-bottom:12px"><a href="#/machines">← All machines</a></div>
-    <section class="panel">
+    ${admin ? `<section class="panel">
       <div class="mbig">${d.photo ? `<img src="${esc(d.photo)}" alt="${esc(m.name)}">` : `<span class="dim">No photo yet</span>`}</div>
       <button id="mp-pick" class="btn">${d.photo ? "Replace photo" : "Add photo"}</button>
       <input id="mp-file" type="file" accept="image/*" style="display:none">
@@ -548,15 +654,15 @@ function machineDetail() {
         <button class="btn auto quiet" data-rename="${esc(m.tag)}">Rename</button>
         <button class="btn auto quiet" data-toggle="${esc(m.tag)}">${m.active === false ? "Turn on" : "Turn off"}</button>
       </div>
-    </section>
+    </section>` : `<section class="panel"><h2>${esc(m.name)}</h2><div class="dim small">Code ${esc(m.tag)}${m.active === false ? " · off" : ""}</div></section>`}
     <section class="panel"><h2>Tokens</h2><div class="tiles">${tokenTiles}</div></section>
-    <section class="panel">
+    ${admin ? `<section class="panel">
       <h2>Payback</h2>
       ${payback}
       ${priceBlock}
-    </section>
+    </section>` : ""}
     <section class="panel">
-      <h2>Repairs (${repairs.length}) · ${gbp(st.repairsTotal)} in total</h2>
+      <h2>Repairs (${repairs.length})${admin ? ` · ${gbp(st.repairsTotal)} in total` : ""}</h2>
       ${repairRows || `<p class="muted">No repairs logged for this machine.</p>`}
     </section>`;
 }
@@ -636,10 +742,11 @@ function wire(v) {
   }));
   v.querySelectorAll("[data-close-fault]").forEach(b => b.addEventListener("click", async () => {
     const f = S.faults.find(x => x.id === b.dataset.closeFault);
-    const cost = askRepairCost(f);
+    const cost = askRepairCost(S.costs[f.id] || f);
     if (!cost) return;
     const batch = writeBatch(db);
-    batch.update(doc(db, "faults", f.id), { status: "closed", closedAt: serverTimestamp(), closedBy: "Rob", ...cost });
+    batch.set(doc(db, "faultCosts", f.id), { ...cost, updatedAt: serverTimestamp() }, { merge: true });
+    batch.update(doc(db, "faults", f.id), { status: "closed", closedAt: serverTimestamp(), closedBy: "Rob", partsCost: deleteField(), labourCost: deleteField() });
     syncStatus(batch, f.tag, f.id);
     await batch.commit();
   }));
@@ -757,9 +864,9 @@ function wire(v) {
   });
   v.querySelectorAll("[data-edit-cost]").forEach(b => b.addEventListener("click", async () => {
     const f = S.faults.find(x => x.id === b.dataset.editCost);
-    const cost = askRepairCost(f);
+    const cost = askRepairCost(S.costs[f.id] || f);
     if (!cost) return;
-    await updateDoc(doc(db, "faults", f.id), cost);
+    await setDoc(doc(db, "faultCosts", f.id), { ...cost, updatedAt: serverTimestamp() }, { merge: true });
   }));
 
   // settings
@@ -780,13 +887,17 @@ function wire(v) {
     if (!/^\d{4}$/.test(code)) return setMsg("as-msg", "Code must be exactly 4 digits.", "error");
     const hash = await sha256(code);
     if ((await getDoc(doc(db, "staffCodes", hash))).exists()) return setMsg("as-msg", "That code's already taken — pick another.", "error");
-    await setDoc(doc(db, "staffCodes", hash), { name, active: true, createdAt: serverTimestamp() });
+    await setDoc(doc(db, "staffCodes", hash), { name, role: el("as-role").value, active: true, createdAt: serverTimestamp() });
     el("as-name").value = ""; el("as-code").value = "";
     setMsg("as-msg", `Added ${name}. Their code is ${code} — write it down now.`, "good");
   });
   v.querySelectorAll("[data-staff-toggle]").forEach(b => b.addEventListener("click", async () => {
     const s = S.staff.find(x => x.id === b.dataset.staffToggle);
     await updateDoc(doc(db, "staffCodes", s.id), { active: s.active === false });
+  }));
+  v.querySelectorAll("[data-staff-role]").forEach(sel => sel.addEventListener("change", async () => {
+    await updateDoc(doc(db, "staffCodes", sel.dataset.staffRole), { role: sel.value });
+    toast(`Access changed to ${sel.options[sel.selectedIndex].text}.`);
   }));
   v.querySelectorAll("[data-staff-del]").forEach(b => b.addEventListener("click", async () => {
     const s = S.staff.find(x => x.id === b.dataset.staffDel);
