@@ -60,6 +60,7 @@ const machineByTag = (tag) => S.machines.find(m => m.tag === tag);
 
 function periodRange() {
   const now = new Date();
+  if (S.role !== "admin" && !["week", "7d", "30d"].includes(S.period)) S.period = "30d"; // managers: 30 days max
   if (S.period === "week") return { from: weekStart(now), to: now, label: "This week" };
   if (S.period === "7d") return { from: new Date(now.getTime() - 7 * DAY), to: now, label: "Last 7 days" };
   if (S.period === "month") return { from: monthStart(now), to: now, label: "This month" };
@@ -279,7 +280,11 @@ function overview() {
   const todayKey = dayKey(new Date());
   const today = S.empties.filter(e => dayKey(tsDate(e.at)) === todayKey).reduce((s, e) => s + (e.tokens || 0), 0);
 
-  const seg = ["week:This week", "7d:Last 7 days", "month:This month", "30d:Last 30 days", "all:All time"]
+  // Managers see 30 days at most. All time, and This month (which can run past 30 days), are Rob's.
+  const periods = S.role === "admin"
+    ? ["week:This week", "7d:Last 7 days", "month:This month", "30d:Last 30 days", "all:All time"]
+    : ["week:This week", "7d:Last 7 days", "30d:Last 30 days"];
+  const seg = periods
     .map(s => { const [k, t] = s.split(":"); return `<button data-period="${k}" class="${S.period === k ? "active" : ""}">${t}</button>`; }).join("");
 
   return `
@@ -329,7 +334,8 @@ function staffBoard() {
 
 function empties() {
   const fm = S._fMachine || "", fs = S._fStaff || "";
-  let list = S.empties;
+  // Managers see the last 30 days only. Older entries are Rob's.
+  let list = S.role === "admin" ? S.empties : S.empties.filter(e => tsDate(e.at).getTime() >= Date.now() - 30 * DAY);
   if (fm) list = list.filter(e => e.tag === fm);
   if (fs) list = list.filter(e => e.staffName === fs);
   const staffNames = [...new Set(S.empties.map(e => e.staffName))].sort();
