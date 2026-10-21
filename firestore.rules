@@ -39,6 +39,32 @@ service cloud.firestore {
         && staffDoc(sess().data.staffHash).data.get('role', 'general') == "manager";
     }
 
+    // Managers work faults: open, in progress, fixed, and back again, with a short note.
+    // They are recorded by their own staff name, and they never write money fields.
+    function mgrName() { return staffDoc(sess().data.staffHash).data.name; }
+    function mgrFaultOk() {
+      let d = request.resource.data;
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "inProgressAt", "inProgressBy", "techNote", "closedAt", "closedBy", "closeNote"])
+        && d.status in ["open", "inprogress", "closed"]
+        && d.get("inProgressBy", "") is string && d.get("closedBy", "") is string
+        && d.get("techNote", "") is string && d.get("techNote", "").size() <= 300
+        && d.get("closeNote", "") is string && d.get("closeNote", "").size() <= 300
+        && (d.status != "inprogress" || (d.inProgressBy == mgrName() && d.inProgressAt == request.time))
+        && (d.status != "closed" || (d.closedBy == mgrName() && d.closedAt == request.time))
+        && (d.status != "open" || (d.get("inProgressBy", "") == "" && d.get("closedBy", "") == "" && d.get("inProgressAt", null) == null && d.get("closedAt", null) == null));
+    }
+    // The same fault fields on the status doc the staff page reads, and nothing else.
+    function mgrStatusOk(tag) {
+      let d = request.resource.data;
+      return d.tag == tag
+        && d.faultState in ["open", "inprogress", "closed"]
+        && d.faultOpen == (d.faultState != "closed")
+        && d.get("faultNote", "") is string && d.get("faultNote", "").size() <= 300
+        && d.get("faultTechNote", "") is string && d.get("faultTechNote", "").size() <= 300
+        && d.get("faultBy", "") is string && d.get("faultId", "") is string && d.get("faultTechBy", "") is string
+        && (d.get("faultAt", null) == null || d.get("faultAt", null) is timestamp);
+    }
+
     // Machines are keyed by their 4-digit code. Staff phones can look one up
     // by code (get) but never list them all.
     match /machines/{tag} {
@@ -77,7 +103,8 @@ service cloud.firestore {
 
     match /faults/{id} {
       allow read: if isAdmin() || isManager();
-      allow update, delete: if isAdmin();
+      allow update: if isAdmin() || (isManager() && mgrFaultOk());
+      allow delete: if isAdmin();
       allow create: if isAdmin() || (
         request.resource.data.keys().hasOnly(["tag", "machineName", "staffHash", "staffName", "at", "note", "status", "emptyId"])
         && baseOk(request.resource.data)
@@ -104,6 +131,13 @@ service cloud.firestore {
         && request.resource.data.faultOpen is bool
         && !(resource != null && resource.data.faultOpen == true && request.resource.data.faultOpen == false)
       );
+      // Managers move a fault's state on this doc too: the same fields, nothing else.
+      allow create: if isManager()
+        && request.resource.data.keys().hasOnly(["tag", "faultOpen", "faultState", "faultNote", "faultAt", "faultBy", "faultId", "faultTechBy", "faultTechNote"])
+        && mgrStatusOk(tag);
+      allow update: if isManager()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["faultOpen", "faultState", "faultNote", "faultAt", "faultBy", "faultId", "faultTechBy", "faultTechNote"])
+        && mgrStatusOk(tag);
     }
 
     // Sent-email log, written by the send-fault-email function (admin SDK).

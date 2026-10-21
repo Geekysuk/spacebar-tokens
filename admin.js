@@ -373,6 +373,14 @@ function empties() {
     </section>`;
 }
 
+// Who a fault records as acting on it: "Rob", or the manager's own staff name.
+async function actorName() {
+  if (S.role === "admin") return "Rob";
+  const s = await getDoc(doc(db, "sessions", auth.currentUser.uid));
+  const sc = await getDoc(doc(db, "staffCodes", s.data().staffHash));
+  return sc.data().name || "";
+}
+
 function faults() {
   const open = S.faults.filter(f => f.status === "open");
   const prog = S.faults.filter(f => f.status === "inprogress");
@@ -380,7 +388,7 @@ function faults() {
   const pill = (f) => f.status === "inprogress"
     ? `<span class="pill" style="background:rgba(46,127,194,0.18);color:#8ed1fc">in progress</span>`
     : `<span class="pill ${f.status === "open" ? "open" : "closed"}">${f.status}</span>`;
-  const buttons = (f) => S.role !== "admin" ? "" : f.status === "open"
+  const buttons = (f) => S.role !== "admin" && S.role !== "manager" ? "" : f.status === "open"
     ? `<button class="btn auto" data-prog-fault="${f.id}">In progress</button><button class="btn auto" data-close-fault="${f.id}">Fixed</button>`
     : f.status === "inprogress"
       ? `<button class="btn auto" data-close-fault="${f.id}">Fixed</button><button class="btn auto quiet" data-open-fault="${f.id}">Back to open</button>`
@@ -765,34 +773,49 @@ function wire(v) {
     const f = S.faults.find(x => x.id === b.dataset.progFault);
     const note = prompt("Note for " + f.machineName + " (optional) — e.g. waiting on a part", f.techNote || "");
     if (note === null) return;
-    const batch = writeBatch(db);
-    batch.update(doc(db, "faults", f.id), { status: "inprogress", inProgressAt: serverTimestamp(), inProgressBy: "Rob", techNote: note.trim() });
-    batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: true, faultState: "inprogress", faultTechBy: "Rob", faultTechNote: note.trim() }, { merge: true });
-    await batch.commit();
+    try {
+      const who = await actorName();
+      const batch = writeBatch(db);
+      batch.update(doc(db, "faults", f.id), { status: "inprogress", inProgressAt: serverTimestamp(), inProgressBy: who, techNote: note.trim() });
+      batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: true, faultState: "inprogress", faultTechBy: who, faultTechNote: note.trim() }, { merge: true });
+      await batch.commit();
+    } catch (e) { toast(`Couldn't update the fault: ${e.code || e.message}`); }
   }));
   v.querySelectorAll("[data-open-fault]").forEach(b => b.addEventListener("click", async () => {
     const f = S.faults.find(x => x.id === b.dataset.openFault);
-    const batch = writeBatch(db);
-    batch.update(doc(db, "faults", f.id), { status: "open", inProgressAt: null, inProgressBy: "", techNote: "" });
-    batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: true, faultState: "open", faultTechBy: "", faultTechNote: "" }, { merge: true });
-    await batch.commit();
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, "faults", f.id), { status: "open", inProgressAt: null, inProgressBy: "", techNote: "" });
+      batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: true, faultState: "open", faultTechBy: "", faultTechNote: "" }, { merge: true });
+      await batch.commit();
+    } catch (e) { toast(`Couldn't update the fault: ${e.code || e.message}`); }
   }));
   v.querySelectorAll("[data-close-fault]").forEach(b => b.addEventListener("click", async () => {
     const f = S.faults.find(x => x.id === b.dataset.closeFault);
-    const cost = askRepairCost(S.costs[f.id] || f);
-    if (!cost) return;
-    const batch = writeBatch(db);
-    batch.set(doc(db, "faultCosts", f.id), { ...cost, updatedAt: serverTimestamp() }, { merge: true });
-    batch.update(doc(db, "faults", f.id), { status: "closed", closedAt: serverTimestamp(), closedBy: "Rob", partsCost: deleteField(), labourCost: deleteField() });
-    syncStatus(batch, f.tag, f.id);
-    await batch.commit();
+    // Costs stay with Rob. A manager's fix is recorded without one; Rob can add it later on the machine's repairs.
+    let cost = null;
+    if (S.role === "admin") {
+      cost = askRepairCost(S.costs[f.id] || f);
+      if (!cost) return;
+    } else if (!confirm(`Mark ${f.machineName} as fixed?`)) return;
+    try {
+      const who = await actorName();
+      const batch = writeBatch(db);
+      if (cost) batch.set(doc(db, "faultCosts", f.id), { ...cost, updatedAt: serverTimestamp() }, { merge: true });
+      const money = S.role === "admin" ? { partsCost: deleteField(), labourCost: deleteField() } : {};
+      batch.update(doc(db, "faults", f.id), { status: "closed", closedAt: serverTimestamp(), closedBy: who, ...money });
+      syncStatus(batch, f.tag, f.id);
+      await batch.commit();
+    } catch (e) { toast(`Couldn't update the fault: ${e.code || e.message}`); }
   }));
   v.querySelectorAll("[data-reopen-fault]").forEach(b => b.addEventListener("click", async () => {
     const f = S.faults.find(x => x.id === b.dataset.reopenFault);
-    const batch = writeBatch(db);
-    batch.update(doc(db, "faults", f.id), { status: "open", closedAt: null, closedBy: "", closeNote: "" });
-    batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: true, faultState: "open", faultNote: f.note, faultAt: f.at, faultBy: f.staffName, faultId: f.id, faultTechBy: "", faultTechNote: "" }, { merge: true });
-    await batch.commit();
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, "faults", f.id), { status: "open", closedAt: null, closedBy: "", closeNote: "" });
+      batch.set(doc(db, "status", f.tag), { tag: f.tag, faultOpen: true, faultState: "open", faultNote: f.note, faultAt: f.at, faultBy: f.staffName, faultId: f.id, faultTechBy: "", faultTechNote: "" }, { merge: true });
+      await batch.commit();
+    } catch (e) { toast(`Couldn't update the fault: ${e.code || e.message}`); }
   }));
 
   // weekly
