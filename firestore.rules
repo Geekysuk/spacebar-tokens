@@ -54,6 +54,12 @@ service cloud.firestore {
       allow list, write: if isAdmin();
     }
 
+    // Staff names and on/off only, no codes. Lets managers see who logged nothing. Rob writes it.
+    match /roster/{id} {
+      allow read: if isAdmin() || isManager();
+      allow write: if isAdmin();
+    }
+
     match /empties/{id} {
       allow read: if isAdmin() || isManager();
       allow update, delete: if isAdmin();

@@ -48,3 +48,17 @@ export function estimatePayback({ left, tokens30, tokenValue, now }) {
   if (!(perDay > 0)) return { date: null, perDay: 0 };
   return { date: new Date(now.getTime() + (left / perDay) * DAY_MS), perDay };
 }
+
+// Staff ranked by empties logged. stats: [{ name, empties, tokens, faults }] for people who logged in the period.
+// rosterNames: active staff names, so people with no empties can still show as worst.
+// top: up to 3 people with at least one empty, most first. worst: up to 3 of the rest, fewest first.
+export function staffTopWorst(stats, rosterNames) {
+  const byName = new Map(stats.map(r => [r.name, r]));
+  const names = new Set([...rosterNames, ...stats.map(r => r.name)]);
+  const rows = [...names].map(name => byName.get(name) || { name, empties: 0, tokens: 0, faults: 0 });
+  rows.sort((a, b) => b.empties - a.empties || b.tokens - a.tokens || a.name.localeCompare(b.name));
+  const top = rows.filter(r => r.empties > 0).slice(0, 3);
+  const rest = rows.filter(r => !top.includes(r));
+  const worst = rest.slice(-3).sort((a, b) => a.empties - b.empties || a.tokens - b.tokens || a.name.localeCompare(b.name));
+  return { top, worst };
+}

@@ -6,10 +6,10 @@ import { onAuthStateChanged, signInAnonymously, signInWithEmailAndPassword, sign
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import { db, auth, sha256, el, setMsg, esc } from "./fb.js";
 import { STAFF_URL } from "./config.js";
-import { tokensInWindow, repairCost, machinePayback, estimatePayback } from "./calc.js";
+import { tokensInWindow, repairCost, machinePayback, estimatePayback, staffTopWorst } from "./calc.js";
 
 /* ---------- state ---------- */
-const S = { machines: [], staff: [], empties: [], faults: [], weeks: {}, details: {}, settings: {}, costs: {}, period: "week", ready: 0, _machineTag: null, role: null, managerLogin: false };
+const S = { machines: [], staff: [], roster: [], empties: [], faults: [], weeks: {}, details: {}, settings: {}, costs: {}, period: "week", ready: 0, _machineTag: null, role: null, managerLogin: false };
 let unsubs = [];
 let view = "overview";
 // Views only Rob can open. Managers get a note instead.
@@ -152,6 +152,20 @@ function enter(user) {
 }
 
 /* ---------- data ---------- */
+// Staff names and on/off only (no codes) go to roster/staff, so managers can see who logged nothing.
+// Runs on every staff change Rob makes; writes only when the list actually changed.
+let lastRoster = "";
+async function syncRoster() {
+  if (S.role !== "admin") return;
+  const people = S.staff.map(s => ({ name: s.name || "—", active: s.active !== false }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const json = JSON.stringify(people);
+  if (json === lastRoster) return;
+  lastRoster = json;
+  try { await setDoc(doc(db, "roster", "staff"), { people, updatedAt: serverTimestamp() }); }
+  catch (e) { lastRoster = ""; console.error("roster", e); }
+}
+
 function subscribe() {
   const opts = { includeMetadataChanges: false };
   const sub = (q, key, mapFn) => onSnapshot(q, (snap) => {
@@ -169,8 +183,12 @@ function subscribe() {
     snap.docs.forEach(d => { S.weeks[d.id] = d.data(); });
     render();
   }));
+  unsubs.push(onSnapshot(doc(db, "roster", "staff"), (snap) => {
+    S.roster = snap.exists() ? (snap.data().people || []) : [];
+    render();
+  }, (err) => toast(`Couldn't load the staff list: ${err.code || err.message}`)));
   if (S.role !== "admin") return; // managers stop here: no staff codes, money or settings
-  unsubs.push(sub(query(collection(db, "staffCodes"), orderBy("name")), "staff"));
+  unsubs.push(sub(query(collection(db, "staffCodes"), orderBy("name")), "staff", syncRoster));
   unsubs.push(onSnapshot(collection(db, "faultCosts"), (snap) => {
     S.costs = {};
     snap.docs.forEach(d => { S.costs[d.id] = d.data(); });
@@ -291,6 +309,24 @@ function overview() {
     </section>`;
 }
 
+// Top and worst staff by empties logged in the period. Sits above All empties, for managers and Rob.
+function staffBoard() {
+  const { from, to, label } = periodRange();
+  const { top, worst } = staffTopWorst(staffStats(from, to), S.roster.filter(p => p.active).map(p => p.name));
+  if (!top.length) return `<section class="panel"><h2>Top and worst staff · ${esc(label)}</h2><p class="muted">Nothing logged in this period.</p></section>`;
+  const table = (list, head) => `<div class="tbl-wrap"><table>
+      <thead><tr><th>${head}</th><th class="num">Empties</th><th class="num">Tokens</th><th class="num">Faults</th></tr></thead>
+      <tbody>${list.map(s => `<tr><td>${esc(s.name)}</td><td class="num">${n(s.empties)}</td><td class="num">${n(s.tokens)}</td><td class="num">${n(s.faults)}</td></tr>`).join("")}</tbody>
+    </table></div>`;
+  return `
+    <section class="panel">
+      <h2>Top and worst staff · ${esc(label)}</h2>
+      <p class="dim small">Ranked by empties logged. Tokens and faults are for context.</p>
+      ${table(top, "Top")}
+      ${worst.length ? table(worst, "Worst") : `<p class="muted">Not enough staff to compare yet.</p>`}
+    </section>`;
+}
+
 function empties() {
   const fm = S._fMachine || "", fs = S._fStaff || "";
   let list = S.empties;
@@ -314,6 +350,7 @@ function empties() {
       <div id="ae-msg"></div>
       <button id="ae-save" class="btn primary mt">Add empty</button>
     </section>` : ""}
+    ${staffBoard()}
     <section class="panel">
       <h2>All empties</h2>
       <div class="filters">
