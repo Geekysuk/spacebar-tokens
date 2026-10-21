@@ -597,7 +597,7 @@ function machineStats(tag, now = new Date()) {
   const price = typeof p === "number" && p > 0 ? p : null;
   const allTime = tokensInWindow(mine, null, now);
   return {
-    allTime, tokenValue, price, repairs,
+    allTime, last30: tokensInWindow(mine, 30, now), tokenValue, price, repairs,
     openRepairs: repairs.filter(f => f.status !== "closed").length,
     ...machinePayback({ tokensAllTime: allTime, repairs, price, tokenValue })
   };
@@ -619,7 +619,7 @@ function machineTile(m) {
       <div class="mphoto">${photo ? `<img src="${esc(photo)}" alt="">` : `<span>${esc(m.tag)}</span>`}</div>
       <div class="mbody">
         <div class="tile-name">${esc(m.name)}</div>
-        <div class="dim small">${esc(m.tag)}${m.active === false ? " · off" : ""} · ${n(st.allTime)} tokens</div>
+        <div class="dim small">${esc(m.tag)}${m.active === false ? " · off" : ""} · ${S.role === "admin" ? `${n(st.allTime)} tokens` : `${n(st.last30)} tokens in the last 30 days`}</div>
         <div class="small" style="margin-top:6px">${tileBacking(st)}</div>
         ${st.openRepairs ? `<div style="margin-top:8px"><span class="pill open">${st.openRepairs} open repair${st.openRepairs > 1 ? "s" : ""}</span></div>` : ""}
       </div>
@@ -639,7 +639,10 @@ function machineDetail() {
   const mine = empMine(tag);
   const first = mine.reduce((a, e) => Math.min(a, e.at.getTime()), now.getTime());
 
-  const periods = [["Last 7 days", 7], ["Last 14 days", 14], ["Last 30 days", 30], ["All time", null]];
+  // Managers see up to 30 days. All time is for Rob only.
+  const periods = admin
+    ? [["Last 7 days", 7], ["Last 14 days", 14], ["Last 30 days", 30], ["All time", null]]
+    : [["Last 7 days", 7], ["Last 14 days", 14], ["Last 30 days", 30]];
   const tokenTiles = periods.map(([label, days]) => {
     const t = tokensInWindow(mine, days, now);
     const span = days ?? Math.max(1, (now.getTime() - first) / DAY);
