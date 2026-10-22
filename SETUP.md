@@ -32,7 +32,7 @@ console.cloud.google.com → APIs & Services → Credentials → the "Browser ke
 ## 5. First use
 1. Open https://spacebar.pinkysrentals.co.uk/admin.html → sign in.
 2. Machines → add: Mario Kart, Ridge Racer, Wild Riders, Big Buck Hunter, TC2, Street Fighter (codes 1001–1006 are suggested automatically).
-3. Staff codes → add one per person and set Access: General, Repair (faults, machines and repair costs, no token counts; signs in with their 4-digit code on the admin page) or Manager. Write the code down when you add it — it's stored hashed and can't be shown again.
+3. Staff codes → add one per person and set Access: General, Repair (faults, machines and repair costs, no token counts; signs in with their 4-digit code on the admin page) or Manager. Managers can add, disable and remove General staff codes themselves; Repair and Manager codes stay yours to set. Write the code down when you add it — it's stored hashed and can't be shown again.
 4. Print QR → pick a machine → Print (50 × 68 mm, same size as the Pinky's stickers).
 5. Weekly check → each Monday, type the start count (tokens on the bar stock). Each week, type the tokens topped up from the reserve and the tokens sold (Mon–Sun). Collected comes from staff empties. Missing shows once next Monday's start count is in.
 6. Settings → set what one token is worth in £. Machines → tap a machine to add its photo, what you paid for it and its repair costs (marking a fault Fixed asks for the costs).

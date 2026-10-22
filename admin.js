@@ -12,8 +12,8 @@ import { tokensInWindow, repairCost, machinePayback, estimatePayback, staffTopWo
 const S = { machines: [], staff: [], roster: [], empties: [], faults: [], weeks: {}, details: {}, settings: {}, costs: {}, period: "week", ready: 0, _machineTag: null, role: null, staffHash: "", managerLogin: false };
 let unsubs = [];
 let view = "overview";
-// Views only Rob can open. Managers get a note instead.
-const ADMIN_ONLY = ["staff", "sticker", "settings"];
+// Views only Rob can open. Managers get a note instead. Managers can open Staff codes (general staff only).
+const ADMIN_ONLY = ["sticker", "settings"];
 
 /* ---------- helpers ---------- */
 const DAY = 86400000;
@@ -163,7 +163,7 @@ function enter(user, role = "admin", staffHash = "") {
 // Runs on every staff change Rob makes; writes only when the list actually changed.
 let lastRoster = "";
 async function syncRoster() {
-  if (S.role !== "admin") return;
+  if (S.role !== "admin" && S.role !== "manager") return;
   const people = S.staff.map(s => ({ name: s.name || "—", active: s.active !== false }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const json = JSON.stringify(people);
@@ -203,8 +203,9 @@ function subscribe() {
     S.roster = snap.exists() ? (snap.data().people || []) : [];
     render();
   }, (err) => toast(`Couldn't load the staff list: ${err.code || err.message}`)));
-  if (S.role !== "admin") return; // managers stop here: no staff codes, money or settings
+  // Staff codes: Rob, and managers (who add and remove general staff only).
   unsubs.push(sub(query(collection(db, "staffCodes"), orderBy("name")), "staff", syncRoster));
+  if (S.role !== "admin") return; // managers stop here: no money, machine details or settings
   unsubs.push(subCosts());
   unsubs.push(onSnapshot(collection(db, "machineDetails"), (snap) => {
     S.details = {};
@@ -518,32 +519,42 @@ const roleOptions = (cur) => ROLES.map(([v, t]) => `<option value="${v}" ${cur =
 function staff() {
   const counts = {};
   S.empties.forEach(e => { counts[e.staffHash] = (counts[e.staffHash] || 0) + 1; });
+  const admin = S.role === "admin";
   return `
     <section class="panel">
       <h2>Add a staff code</h2>
       <div class="row">
         <div><label>Name</label><input id="as-name" type="text" maxlength="40"></div>
         <div><label>4-digit code</label><input id="as-code" type="tel" inputmode="numeric" maxlength="4"></div>
-        <div><label>Access</label><select id="as-role">${roleOptions("general")}</select></div>
+        ${admin ? `<div><label>Access</label><select id="as-role">${roleOptions("general")}</select></div>` : ""}
       </div>
       <div id="as-msg"></div>
       <button id="as-save" class="btn primary mt">Add code</button>
-      <p class="dim small" style="margin-top:10px">General: logs empties and reports faults on the staff page. Repair: the repair view on the admin page (faults, machines and repair costs; no token counts). Manager: the manager view (performance, not money or settings). Codes are stored hashed, so write each one down when you give it out. One code per person so empties are attributable.</p>
+      <p class="dim small" style="margin-top:10px">${admin
+        ? "General: logs empties and reports faults on the staff page. Repair: the repair view on the admin page (faults, machines and repair costs; no token counts). Manager: the manager view (performance, not money or settings). Codes are stored hashed, so write each one down when you give it out. One code per person so empties are attributable."
+        : "General staff log empties and report faults on the staff page. You can add, disable and remove general staff here. Managers and repair access are set by Rob. Codes are stored hashed, so write each one down when you give it out. One code per person so empties are attributable."}</p>
     </section>
     <section class="panel">
       <h2>Staff (${S.staff.length})</h2>
       <div class="tbl-wrap"><table>
         <thead><tr><th>Name</th><th class="num">Empties logged</th><th>Access</th><th></th></tr></thead>
-        <tbody>${S.staff.map(s => `
+        <tbody>${S.staff.map(s => {
+          const general = (s.role || "general") === "general";
+          const access = admin
+            ? `<select data-staff-role="${s.id}">${roleOptions(s.role || "general")}</select>`
+            : esc(ROLES.find(([v]) => v === (s.role || "general"))?.[1] || "General");
+          const actions = admin || general
+            ? `<button class="btn auto quiet" data-staff-toggle="${s.id}">${s.active === false ? "Enable" : "Disable"}</button>
+              <button class="btn auto danger" data-staff-del="${s.id}">Remove</button>`
+            : `<span class="sub">Rob only</span>`;
+          return `
           <tr class="${s.active === false ? "inactive" : ""}">
             <td>${esc(s.name)}${s.active === false ? '<span class="sub">disabled</span>' : ""}</td>
             <td class="num">${n(counts[s.id] || 0)}</td>
-            <td><select data-staff-role="${s.id}">${roleOptions(s.role || "general")}</select></td>
-            <td style="white-space:nowrap">
-              <button class="btn auto quiet" data-staff-toggle="${s.id}">${s.active === false ? "Enable" : "Disable"}</button>
-              <button class="btn auto danger" data-staff-del="${s.id}">Remove</button>
-            </td>
-          </tr>`).join("") || `<tr><td colspan="4" class="muted">No staff codes yet.</td></tr>`}</tbody>
+            <td>${access}</td>
+            <td style="white-space:nowrap">${actions}</td>
+          </tr>`;
+        }).join("") || `<tr><td colspan="4" class="muted">No staff codes yet.</td></tr>`}</tbody>
       </table></div>
     </section>`;
 }
@@ -1022,7 +1033,8 @@ function wire(v) {
     if (!/^\d{4}$/.test(code)) return setMsg("as-msg", "Code must be exactly 4 digits.", "error");
     const hash = await sha256(code);
     if ((await getDoc(doc(db, "staffCodes", hash))).exists()) return setMsg("as-msg", "That code's already taken — pick another.", "error");
-    await setDoc(doc(db, "staffCodes", hash), { name, role: el("as-role").value, active: true, createdAt: serverTimestamp() });
+    const role = v.querySelector("#as-role")?.value || "general"; // managers add general staff only
+    await setDoc(doc(db, "staffCodes", hash), { name, role, active: true, createdAt: serverTimestamp() });
     el("as-name").value = ""; el("as-code").value = "";
     setMsg("as-msg", `Added ${name}. Their code is ${code} — write it down now.`, "good");
   });

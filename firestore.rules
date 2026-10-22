@@ -86,16 +86,34 @@ service cloud.firestore {
     }
 
     // Staff codes are keyed by SHA-256 of the code. Public can only "get" one
-    // by hash (to find the name); only Rob can list/manage them.
+    // by hash (to find the name). Rob manages all of them. Managers can list them,
+    // add general staff, switch general staff on or off, and remove general staff.
+    // Manager and repair codes stay Rob's.
     match /staffCodes/{hash} {
       allow get: if true;
-      allow list, write: if isAdmin();
+      allow list: if isAdmin() || isManager();
+      allow create: if isAdmin() || (isManager()
+        && hash.size() == 64
+        && request.resource.data.keys().hasOnly(["name", "role", "active", "createdAt"])
+        && request.resource.data.name is string && request.resource.data.name.size() >= 1 && request.resource.data.name.size() <= 40
+        && request.resource.data.role == "general"
+        && request.resource.data.active == true
+        && request.resource.data.createdAt == request.time);
+      allow update: if isAdmin() || (isManager()
+        && resource.data.get('role', 'general') == "general"
+        && request.resource.data.get('role', 'general') == "general"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["active"]));
+      allow delete: if isAdmin() || (isManager() && resource.data.get('role', 'general') == "general");
     }
 
-    // Staff names and on/off only, no codes. Lets managers see who logged nothing. Rob writes it.
+    // Staff names and on/off only, no codes. Lets managers see who logged nothing. Rob writes it,
+    // and managers keep it in step when they add, switch off or remove general staff.
     match /roster/{id} {
       allow read: if isAdmin() || isManager();
-      allow write: if isAdmin();
+      allow write: if isAdmin() || (isManager() && id == "staff"
+        && request.resource.data.keys().hasOnly(["people", "updatedAt"])
+        && request.resource.data.people is list
+        && request.resource.data.updatedAt == request.time);
     }
 
     match /empties/{id} {
