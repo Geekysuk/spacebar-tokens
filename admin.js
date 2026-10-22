@@ -9,7 +9,7 @@ import { STAFF_URL } from "./config.js";
 import { tokensInWindow, repairCost, machinePayback, estimatePayback, staffTopWorst } from "./calc.js";
 
 /* ---------- state ---------- */
-const S = { machines: [], staff: [], roster: [], empties: [], faults: [], weeks: {}, details: {}, settings: {}, costs: {}, period: "week", ready: 0, _machineTag: null, role: null, managerLogin: false };
+const S = { machines: [], staff: [], roster: [], empties: [], faults: [], weeks: {}, details: {}, settings: {}, costs: {}, period: "week", ready: 0, _machineTag: null, role: null, staffHash: "", managerLogin: false };
 let unsubs = [];
 let view = "overview";
 // Views only Rob can open. Managers get a note instead.
@@ -105,13 +105,16 @@ onAuthStateChanged(auth, async (user) => {
     return;
   }
   if (S.managerLogin) return; // the manager sign-in button finishes this
+  let role = "admin", staffHash = "";
   if (user.isAnonymous) {
-    // A returning manager needs a live session (8 hours), or they're signed out.
+    // A returning manager or repair needs a live session (8 hours), or they're signed out.
     const s = await getDoc(doc(db, "sessions", user.uid)).catch(() => null);
     const fresh = !!s && s.exists() && Date.now() - tsDate(s.data().at).getTime() < 8 * 3600 * 1000;
     if (!fresh) return endSession();
+    role = s.data().role === "repair" ? "repair" : "manager";
+    staffHash = s.data().staffHash || "";
   }
-  enter(user);
+  enter(user, role, staffHash);
 });
 
 // Manager sign-in: the 4-digit code must belong to an active manager.
@@ -124,28 +127,31 @@ el("mgr-btn").addEventListener("click", async () => {
   try {
     const hash = await sha256(code);
     const sc = await getDoc(doc(db, "staffCodes", hash));
-    if (!sc.exists() || sc.data().active === false || sc.data().role !== "manager") throw Object.assign(new Error("not a manager"), { code: "not-manager" });
+    const role = sc.exists() ? sc.data().role : "";
+    if (!sc.exists() || sc.data().active === false || (role !== "manager" && role !== "repair")) throw Object.assign(new Error("not a manager or repair"), { code: "not-manager" });
     const cred = await signInAnonymously(auth);
-    await setDoc(doc(db, "sessions", cred.user.uid), { staffHash: hash, role: "manager", at: serverTimestamp() });
+    await setDoc(doc(db, "sessions", cred.user.uid), { staffHash: hash, role, at: serverTimestamp() });
     S.managerLogin = false;
     el("mgr-code").value = "";
-    enter(cred.user);
+    enter(cred.user, role, hash);
   } catch (e) {
     S.managerLogin = false;
     if (auth.currentUser && auth.currentUser.isAnonymous) { try { await signOut(auth); } catch (x) { /* ignore */ } }
     setMsg("mgr-msg", e.code === "auth/operation-not-allowed"
       ? "Manager sign-in isn't switched on in Firebase yet (Authentication → Sign-in method → Anonymous)."
-      : e.code === "not-manager" ? "That code isn't a manager code." : "Couldn't sign in. Try again.", "error");
+      : e.code === "not-manager" ? "That code isn't a manager or repair code." : "Couldn't sign in. Try again.", "error");
   } finally { btn.disabled = false; }
 });
 el("mgr-code").addEventListener("keydown", e => { if (e.key === "Enter") el("mgr-btn").click(); });
 
-function enter(user) {
-  S.role = user.isAnonymous ? "manager" : "admin";
+function enter(user, role = "admin", staffHash = "") {
+  S.role = user.isAnonymous ? role : "admin";
+  S.staffHash = staffHash;
   el("login").classList.add("hidden");
   el("app").classList.remove("hidden");
-  el("app-tag").textContent = S.role === "manager" ? "manager view" : "tokens";
+  el("app-tag").textContent = S.role === "manager" ? "manager view" : S.role === "repair" ? "repair view" : "tokens";
   document.querySelectorAll("[data-admin]").forEach(a => a.classList.toggle("hidden", S.role !== "admin"));
+  document.querySelectorAll("[data-no-repair]").forEach(a => a.classList.toggle("hidden", S.role === "repair"));
   resetIdle();
   unsubs.forEach(u => u()); unsubs = [];
   subscribe();
@@ -177,8 +183,17 @@ function subscribe() {
   }, (err) => { console.error(key, err); toast(`Couldn't load ${key}: ${err.code || err.message}`); });
 
   unsubs.push(sub(query(collection(db, "machines"), orderBy("name")), "machines"));
-  unsubs.push(sub(query(collection(db, "empties"), orderBy("at", "desc")), "empties"));
   unsubs.push(sub(query(collection(db, "faults"), orderBy("at", "desc")), "faults", S.role === "admin" ? migrateLegacyCosts : null));
+  const subCosts = () => onSnapshot(collection(db, "faultCosts"), (snap) => {
+    S.costs = {};
+    snap.docs.forEach(d => { S.costs[d.id] = d.data(); });
+    render();
+  }, (err) => toast(`Couldn't load repair costs: ${err.code || err.message}`));
+  if (S.role === "repair") { // repair: machines, faults and repair costs. No tokens, weeks, roster or settings.
+    unsubs.push(subCosts());
+    return;
+  }
+  unsubs.push(sub(query(collection(db, "empties"), orderBy("at", "desc")), "empties"));
   unsubs.push(onSnapshot(collection(db, "weeks"), (snap) => {
     S.weeks = {};
     snap.docs.forEach(d => { S.weeks[d.id] = d.data(); });
@@ -190,11 +205,7 @@ function subscribe() {
   }, (err) => toast(`Couldn't load the staff list: ${err.code || err.message}`)));
   if (S.role !== "admin") return; // managers stop here: no staff codes, money or settings
   unsubs.push(sub(query(collection(db, "staffCodes"), orderBy("name")), "staff", syncRoster));
-  unsubs.push(onSnapshot(collection(db, "faultCosts"), (snap) => {
-    S.costs = {};
-    snap.docs.forEach(d => { S.costs[d.id] = d.data(); });
-    render();
-  }, (err) => toast(`Couldn't load repair costs: ${err.code || err.message}`)));
+  unsubs.push(subCosts());
   unsubs.push(onSnapshot(collection(db, "machineDetails"), (snap) => {
     S.details = {};
     snap.docs.forEach(d => { S.details[d.id] = d.data(); });
@@ -248,7 +259,8 @@ function render() {
   const open = S.faults.filter(f => f.status !== "closed").length;
   el("nav-faults").textContent = open ? `(${open})` : "";
   const v = el("view");
-  if (S.role === "manager" && ADMIN_ONLY.includes(view)) { v.innerHTML = `<p class="muted">Only Rob can open this page.</p>`; return; }
+  if (S.role !== "admin" && ADMIN_ONLY.includes(view)) { v.innerHTML = `<p class="muted">Only Rob can open this page.</p>`; return; }
+  if (S.role === "repair" && !["faults", "machines", "machine"].includes(view)) { location.hash = "#/faults"; return; }
   const fn = { overview, empties, faults, weekly, machines, machine: machineDetail, staff, sticker, settings: settingsView }[view] || overview;
   v.innerHTML = fn();
   wire(v);
@@ -387,14 +399,30 @@ async function actorName() {
   return sc.data().name || "";
 }
 
+// Repair reports a new fault on a machine, the same way staff do.
+function reportPanel() {
+  const opts = S.machines.filter(m => m.active !== false).map(m => `<option value="${esc(m.tag)}">${esc(m.name)} · ${esc(m.tag)}</option>`).join("");
+  return `
+    <section class="panel">
+      <h2>Report a fault</h2>
+      <label for="rf-machine">Machine</label>
+      <select id="rf-machine">${opts}</select>
+      <label for="rf-note" style="margin-top:10px">What's wrong</label>
+      <textarea id="rf-note" maxlength="300" placeholder="e.g. coin mech jammed, screen flickers"></textarea>
+      <button id="rf-save" class="btn primary mt">Report fault</button>
+      <div id="rf-msg"></div>
+    </section>`;
+}
+
 function faults() {
   const open = S.faults.filter(f => f.status === "open");
   const prog = S.faults.filter(f => f.status === "inprogress");
   const closed = S.faults.filter(f => f.status === "closed").slice(0, 50);
+  const money = S.role === "admin" || S.role === "repair"; // repair costs: Rob and the repair role only
   const pill = (f) => f.status === "inprogress"
     ? `<span class="pill" style="background:rgba(46,127,194,0.18);color:#8ed1fc">in progress</span>`
     : `<span class="pill ${f.status === "open" ? "open" : "closed"}">${f.status}</span>`;
-  const buttons = (f) => S.role !== "admin" && S.role !== "manager" ? "" : f.status === "open"
+  const buttons = (f) => !["admin", "manager", "repair"].includes(S.role) ? "" : f.status === "open"
     ? `<button class="btn auto" data-prog-fault="${f.id}">In progress</button><button class="btn auto" data-close-fault="${f.id}">Fixed</button>`
     : f.status === "inprogress"
       ? `<button class="btn auto" data-close-fault="${f.id}">Fixed</button><button class="btn auto quiet" data-open-fault="${f.id}">Back to open</button>`
@@ -406,10 +434,12 @@ function faults() {
         <div class="t">${fmtDay.format(tsDate(f.at))} ${fmtTime.format(tsDate(f.at))} · reported by ${esc(f.staffName)}${f.status === "inprogress" && f.inProgressBy ? ` · in progress (${esc(f.inProgressBy)})` : ""}${f.closedAt ? ` · closed ${fmtShort.format(tsDate(f.closedAt))}${f.closedBy ? ` by ${esc(f.closedBy)}` : ""}` : ""}</div>
         <div class="note">${esc(f.note)}</div>
         ${f.status === "closed" ? (f.closeNote ? `<div class="note" style="color:var(--blue-soft)">${esc(f.closeNote)}</div>` : "") : (f.techNote ? `<div class="note" style="color:var(--blue-soft)">${esc(f.inProgressBy || "Technician")}: ${esc(f.techNote)}</div>` : "")}
+        ${money && S.costs[f.id] ? `<div class="dim small">Parts ${gbp(S.costs[f.id].partsCost)} · Labour ${gbp(S.costs[f.id].labourCost)} · ${gbp(repairCost(withCosts(f)))}</div>` : ""}
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${buttons(f)}</div>
     </div>`;
   return `
+    ${S.role === "repair" ? reportPanel() : ""}
     <section class="panel"><h2>Open (${open.length})</h2>${open.map(item).join("") || `<p class="muted">Nothing waiting. Staff report faults on the token page when they tick "Something's wrong".</p>`}</section>
     <section class="panel"><h2>In progress (${prog.length})</h2>${prog.map(item).join("") || `<p class="muted">Nothing in progress. The technician (or you) can mark a job in progress once it's been looked at.</p>`}</section>
     <section class="panel"><h2>Fixed</h2>${closed.map(item).join("") || `<p class="muted">None yet.</p>`}</section>`;
@@ -477,11 +507,11 @@ function machines() {
     <section class="panel">
       <h2>Machines (${S.machines.length})</h2>
       <div class="mgrid">${S.machines.map(m => machineTile(m)).join("") || `<p class="muted">No machines yet.</p>`}</div>
-      <p class="dim small" style="margin-top:10px">${admin ? "Tap a machine for its photo, tokens, payback and repairs. Turn a machine off if it leaves the floor — its history stays. The code is fixed once created (it's on the sticker)." : "Tap a machine for its tokens and repairs."}</p>
+      <p class="dim small" style="margin-top:10px">${admin ? "Tap a machine for its photo, tokens, payback and repairs. Turn a machine off if it leaves the floor — its history stays. The code is fixed once created (it's on the sticker)." : S.role === "repair" ? "Tap a machine to see its faults and repair costs." : "Tap a machine for its tokens and repairs."}</p>
     </section>`;
 }
 
-// Access levels for a staff code. Repair is Michael's technician page; it uses its own tech code.
+// Access levels for a staff code. Repair signs in on the admin page with the 4-digit code, like a manager, and sees faults, machines and repair costs (no tokens).
 const ROLES = [["general", "General"], ["repair", "Repair"], ["manager", "Manager"]];
 const roleOptions = (cur) => ROLES.map(([v, t]) => `<option value="${v}" ${cur === v ? "selected" : ""}>${t}</option>`).join("");
 
@@ -498,7 +528,7 @@ function staff() {
       </div>
       <div id="as-msg"></div>
       <button id="as-save" class="btn primary mt">Add code</button>
-      <p class="dim small" style="margin-top:10px">General: logs empties and reports faults on the staff page. Repair: the technician page (their own tech code). Manager: the manager view (performance, not money or settings). Codes are stored hashed, so write each one down when you give it out. One code per person so empties are attributable.</p>
+      <p class="dim small" style="margin-top:10px">General: logs empties and reports faults on the staff page. Repair: the repair view on the admin page (faults, machines and repair costs; no token counts). Manager: the manager view (performance, not money or settings). Codes are stored hashed, so write each one down when you give it out. One code per person so empties are attributable.</p>
     </section>
     <section class="panel">
       <h2>Staff (${S.staff.length})</h2>
@@ -625,7 +655,7 @@ function machineTile(m) {
       <div class="mphoto">${photo ? `<img src="${esc(photo)}" alt="">` : `<span>${esc(m.tag)}</span>`}</div>
       <div class="mbody">
         <div class="tile-name">${esc(m.name)}</div>
-        <div class="dim small">${esc(m.tag)}${m.active === false ? " · off" : ""} · ${S.role === "admin" ? `${n(st.allTime)} tokens` : `${n(st.last30)} tokens in the last 30 days`}</div>
+        <div class="dim small">${esc(m.tag)}${m.active === false ? " · off" : ""}${S.role === "repair" ? "" : ` · ${S.role === "admin" ? `${n(st.allTime)} tokens` : `${n(st.last30)} tokens in the last 30 days`}`}</div>
         <div class="small" style="margin-top:6px">${tileBacking(st)}</div>
         ${st.openRepairs ? `<div style="margin-top:8px"><span class="pill open">${st.openRepairs} open repair${st.openRepairs > 1 ? "s" : ""}</span></div>` : ""}
       </div>
@@ -634,6 +664,8 @@ function machineTile(m) {
 
 function machineDetail() {
   const admin = S.role === "admin";
+  const repair = S.role === "repair";
+  const money = admin || repair; // repair costs: Rob and the repair role
   const tag = S._machineTag;
   const m = machineByTag(tag);
   if (!m) return S.machines.length
@@ -690,9 +722,9 @@ function machineDetail() {
         <div>${statusPill(f.status)} <span class="dim small">${fmtDayYear.format(tsDate(f.at))}${f.closedAt ? ` · fixed ${fmtDayYear.format(tsDate(f.closedAt))}` : ""}</span></div>
         <div class="note">${esc(f.note)}</div>
         ${f.closeNote ? `<div class="note" style="color:var(--blue-soft)">${esc(f.closeNote)}</div>` : ""}
-        ${admin ? `<div class="dim small">Parts ${gbp(f.partsCost)} · Labour ${gbp(f.labourCost)} · ${gbp(repairCost(f))}</div>` : ""}
+        ${money ? `<div class="dim small">Parts ${gbp(f.partsCost)} · Labour ${gbp(f.labourCost)} · ${gbp(repairCost(f))}</div>` : ""}
       </div>
-      ${admin ? `<button class="btn auto quiet" data-edit-cost="${f.id}">Cost</button>` : ""}
+      ${money ? `<button class="btn auto quiet" data-edit-cost="${f.id}">Cost</button>` : ""}
     </div>`).join("");
 
   return `
@@ -709,20 +741,21 @@ function machineDetail() {
         <button class="btn auto quiet" data-toggle="${esc(m.tag)}">${m.active === false ? "Turn on" : "Turn off"}</button>
       </div>
     </section>` : `<section class="panel"><h2>${esc(m.name)}</h2><div class="dim small">Code ${esc(m.tag)}${m.active === false ? " · off" : ""}</div></section>`}
-    <section class="panel"><h2>Tokens</h2><div class="tiles">${tokenTiles}</div></section>
+    ${repair ? "" : `<section class="panel"><h2>Tokens</h2><div class="tiles">${tokenTiles}</div></section>`}
     ${admin ? `<section class="panel">
       <h2>Payback</h2>
       ${payback}
       ${priceBlock}
     </section>` : ""}
     <section class="panel">
-      <h2>Repairs (${repairs.length})${admin ? ` · ${gbp(st.repairsTotal)} in total` : ""}</h2>
+      <h2>Repairs (${repairs.length})${money ? ` · ${gbp(st.repairsTotal)} in total` : ""}</h2>
       ${repairRows || `<p class="muted">No repairs logged for this machine.</p>`}
     </section>`;
 }
 
 function settingsView() {
   const tv = S.settings?.tokenValue;
+  const t = S.settings?.technician || {};
   return `
     <section class="panel">
       <h2>Token value</h2>
@@ -733,7 +766,21 @@ function settingsView() {
         <button id="set-token-save" class="btn primary auto">Save</button>
       </div>
       <div id="set-msg"></div>
-    </section>`;
+    </section>
+    <section class="panel">
+      <h2>Technician</h2>
+      <p class="dim small">The repair person. They get the fault digest emails. Their login is their own 4-digit code under Staff codes (Access: Repair).</p>
+      <label for="tech-name">Name</label>
+      <input id="tech-name" type="text" maxlength="40" value="${esc(t.name || "")}">
+      <label for="tech-email">Email</label>
+      <input id="tech-email" type="email" maxlength="120" value="${esc(t.email || "")}">
+      <label for="tech-phone">Phone</label>
+      <input id="tech-phone" type="tel" inputmode="tel" maxlength="30" value="${esc(t.phone || "")}">
+      <button id="tech-save" class="btn primary mt">Save details</button>
+      <p class="dim small" style="margin-top:10px">Digest emails still go to the address set in the mail function. This email field doesn't change that yet.</p>
+      <div id="tech-msg"></div>
+    </section>
+`;
 }
 
 /* ---------- wiring ---------- */
@@ -772,6 +819,25 @@ function wire(v) {
     await deleteDoc(doc(db, "empties", e.id));
   }));
 
+  // repair: report a new fault, the same way staff do
+  v.querySelector("#rf-save")?.addEventListener("click", async () => {
+    const tag = el("rf-machine").value, note = el("rf-note").value.trim();
+    const m = machineByTag(tag);
+    if (!m) return setMsg("rf-msg", "Pick a machine.", "error");
+    if (!note) return setMsg("rf-msg", "Say what's wrong.", "error");
+    if (S.faults.some(f => f.tag === tag && f.status !== "closed")) return setMsg("rf-msg", `${m.name} already has an open fault. Work that one instead.`, "error");
+    try {
+      const name = await actorName();
+      const ref = doc(collection(db, "faults"));
+      const batch = writeBatch(db);
+      batch.set(ref, { tag, machineName: m.name, staffHash: S.staffHash, staffName: name, at: serverTimestamp(), note, status: "open", emptyId: "" });
+      batch.set(doc(db, "status", tag), { tag, faultOpen: true, faultState: "open", faultNote: note, faultAt: serverTimestamp(), faultBy: name, faultId: ref.id, faultTechBy: "", faultTechNote: "" }, { merge: true });
+      await batch.commit();
+      el("rf-note").value = "";
+      setMsg("rf-msg", `Reported ${m.name}.`, "good");
+    } catch (err) { setMsg("rf-msg", "Couldn't report it: " + (err.code || err.message), "error"); }
+  });
+
   // faults
   const syncStatus = (batch, tag, skipId) => {
     const rest = S.faults.filter(x => x.tag === tag && x.status !== "closed" && x.id !== skipId).sort((p, q) => tsDate(p.at) - tsDate(q.at));
@@ -801,9 +867,9 @@ function wire(v) {
   }));
   v.querySelectorAll("[data-close-fault]").forEach(b => b.addEventListener("click", async () => {
     const f = S.faults.find(x => x.id === b.dataset.closeFault);
-    // Costs stay with Rob. A manager's fix is recorded without one; Rob can add it later on the machine's repairs.
+    // Rob and the repair role enter the cost. A manager's fix is recorded without one; Rob can add it later.
     let cost = null;
-    if (S.role === "admin") {
+    if (S.role === "admin" || S.role === "repair") {
       cost = askRepairCost(S.costs[f.id] || f);
       if (!cost) return;
     } else if (!confirm(`Mark ${f.machineName} as fixed?`)) return;
@@ -973,6 +1039,17 @@ function wire(v) {
     if (!confirm(`Remove ${s.name}'s code? Their past empties stay on record.`)) return;
     await deleteDoc(doc(db, "staffCodes", s.id));
   }));
+
+  // technician details (contact only; the repair login is a staff code)
+  v.querySelector("#tech-save")?.addEventListener("click", async () => {
+    const name = el("tech-name").value.trim(), email = el("tech-email").value.trim(), phone = el("tech-phone").value.trim();
+    if (!name) return setMsg("tech-msg", "Enter the technician's name.", "error");
+    if (email && !/^\S+@\S+\.\S+$/.test(email)) return setMsg("tech-msg", "That email doesn't look right.", "error");
+    try {
+      await setDoc(doc(db, "settings", "app"), { technician: { name, email, phone }, updatedAt: serverTimestamp() }, { merge: true });
+      setMsg("tech-msg", "Saved.", "good");
+    } catch (err) { setMsg("tech-msg", "Couldn't save: " + (err.code || err.message), "error"); }
+  });
 
   // sticker
   v.querySelector("#st-machine")?.addEventListener("change", e => { S._stickerTag = e.target.value; render(); });

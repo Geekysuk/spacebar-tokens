@@ -38,6 +38,18 @@ service cloud.firestore {
         && staffOk(sess().data.staffHash)
         && staffDoc(sess().data.staffHash).data.get('role', 'general') == "manager";
     }
+    // Repair sign-in: the same 4-digit code and 8-hour session as a manager, for the repair role.
+    // Repair sees machines, faults and repair costs. Never tokens, weeks, roster or settings.
+    function isRepair() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/sessions/$(request.auth.uid))
+        && sess().data.role == "repair"
+        && sess().data.at + duration.value(8, 'h') > request.time
+        && staffOk(sess().data.staffHash)
+        && staffDoc(sess().data.staffHash).data.get('role', 'general') == "repair";
+    }
+    // Managers and repair both work faults and their status.
+    function isFaultUser() { return isManager() || isRepair(); }
 
     // Managers work faults: open, in progress, fixed, and back again, with a short note.
     // They are recorded by their own staff name, and they never write money fields.
@@ -69,7 +81,7 @@ service cloud.firestore {
     // by code (get) but never list them all.
     match /machines/{tag} {
       allow get: if true;
-      allow list: if isAdmin() || isManager();
+      allow list: if isAdmin() || isFaultUser();
       allow write: if isAdmin();
     }
 
@@ -102,8 +114,8 @@ service cloud.firestore {
     }
 
     match /faults/{id} {
-      allow read: if isAdmin() || isManager();
-      allow update: if isAdmin() || (isManager() && mgrFaultOk());
+      allow read: if isAdmin() || isFaultUser();
+      allow update: if isAdmin() || (isFaultUser() && mgrFaultOk());
       allow delete: if isAdmin();
       allow create: if isAdmin() || (
         request.resource.data.keys().hasOnly(["tag", "machineName", "staffHash", "staffName", "at", "note", "status", "emptyId"])
@@ -131,11 +143,11 @@ service cloud.firestore {
         && request.resource.data.faultOpen is bool
         && !(resource != null && resource.data.faultOpen == true && request.resource.data.faultOpen == false)
       );
-      // Managers move a fault's state on this doc too: the same fields, nothing else.
-      allow create: if isManager()
+      // Managers and repair move a fault's state on this doc too: the same fields, nothing else.
+      allow create: if isFaultUser()
         && request.resource.data.keys().hasOnly(["tag", "faultOpen", "faultState", "faultNote", "faultAt", "faultBy", "faultId", "faultTechBy", "faultTechNote"])
         && mgrStatusOk(tag);
-      allow update: if isManager()
+      allow update: if isFaultUser()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["faultOpen", "faultState", "faultNote", "faultAt", "faultBy", "faultId", "faultTechBy", "faultTechNote"])
         && mgrStatusOk(tag);
     }
@@ -156,9 +168,14 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // Repair costs (parts and labour). Rob only. Managers see the repair history, never the money.
+    // Repair costs (parts and labour). Rob and the repair role. Managers see the repair history, never the money.
     match /faultCosts/{id} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin() || isRepair();
+      allow create, update: if isAdmin() || (isRepair()
+        && request.resource.data.partsCost is number && request.resource.data.partsCost >= 0 && request.resource.data.partsCost <= 100000
+        && request.resource.data.labourCost is number && request.resource.data.labourCost >= 0 && request.resource.data.labourCost <= 100000
+        && request.resource.data.updatedAt == request.time);
+      allow delete: if isAdmin();
     }
 
     // Manager sessions, created when a manager code is entered after anonymous sign-in.
@@ -167,10 +184,10 @@ service cloud.firestore {
       allow read, delete: if request.auth != null && request.auth.uid == uid;
       allow create: if request.auth != null && request.auth.uid == uid
         && request.resource.data.keys().hasOnly(["staffHash", "role", "at"])
-        && request.resource.data.role == "manager"
+        && request.resource.data.role in ["manager", "repair"]
         && request.resource.data.at == request.time
         && staffOk(request.resource.data.staffHash)
-        && staffDoc(request.resource.data.staffHash).data.get('role', 'general') == "manager";
+        && staffDoc(request.resource.data.staffHash).data.get('role', 'general') == request.resource.data.role;
     }
 
     // Private per-machine details: photo and what Rob paid. Staff and public never read these.
